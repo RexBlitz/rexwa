@@ -12,7 +12,7 @@ class GeminiAdvancedModule {
         };
 
         // Add your Gemini API key here
-        this.apiKey = "AIzaSyC1-5hrYIdfNsg2B7bcb5Qs3ib1MIWlbOE";
+        this.apiKey = "AIzaSyCjsufhrqepM1uYNji8hwhf_mQnDCjKL60";
         this.genAI = null;
         this.model = null;
         
