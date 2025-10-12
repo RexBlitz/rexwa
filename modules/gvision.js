@@ -21,7 +21,7 @@ class GeminiVisionModule {
     this.genAI = null;
     this.visionModel = null;
     // --- ADD YOUR API KEY HERE ---
-    this.apiKey = 'AIzaSyC1-5hrYIdfNsg2B7bcb5Qs3ib1MIWlbOE';
+    this.apiKey = 'AIzaSyCjsufhrqepM1uYNji8hwhf_mQnDCjKL60';
 
     // Command definitions with user-friendly UI and full media support
     this.commands = [
