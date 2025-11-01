@@ -175,7 +175,7 @@ class HyperWaBot {
                 browser: ['HyperWa', 'Chrome', '3.0'],
                 // Enable message history for better message retrieval
                 syncFullHistory: false,
-                markOnlineOnConnect: true,
+                markOnlineOnConnect: false,
                 // Add firewall bypass
                 firewall: false
             });
