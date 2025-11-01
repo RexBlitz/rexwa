@@ -11,7 +11,7 @@ class DownloaderModule {
 
         // API endpoints
         this.delirusApi = 'https://delirius-apiofc.vercel.app/download';
-        this.nekoApi = 'https://api.nekorinn.my.id/downloader';
+        this.nekoApi = 'https://api.nekolabs.web.id';
         this.spotifyApi = 'https://api.nekorinn.my.id/downloader/spotify';
 
         this.commands = [
@@ -389,79 +389,92 @@ class DownloaderModule {
         }
     }
 
-    // YouTube MP3 Download
-    async downloadYouTubeMP3(msg, params, context) {
-        if (params.length === 0) {
-            return await context.bot.sendMessage(context.sender, {
-                text: '❌ Please provide a YouTube URL.\n\n💡 Usage: `.ytmp3 <url>`'
-            });
-        }
+// Helper to pick the best media format
+_pickMedia(medias, type = 'audio', preferredQuality = null) {
+    if (!medias || !medias.length) return null;
 
-        const url = params[0];
-        
-        try {
-            const result = await this._fetchFromApi(`${this.nekoApi}/youtube?url=${encodeURIComponent(url)}&format=128&type=audio`);
-            
-            if (!result.status || !result.result) {
-                throw new Error('Invalid API response');
-            }
+    // Filter by type (audio/video)
+    let filtered = medias.filter(m => (type === 'audio' ? m.is_audio : m.type === 'video'));
 
-            const data = result.result;
-            
-            const caption = `╭  ✦ YouTube MP3 Download ✦  ╮\n\n` +
-                           `*◦ Title:* ${data.title || 'Unknown Title'}\n` +
-                           `*◦ Quality:* ${data.format || '128kbps'}\n` +
-                           `*◦ Type:* ${data.type || 'audio'}`;
+    // Sort by quality: higher bitrate first
+    filtered.sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0));
 
-            if (data.downloadUrl) {
-                await this._downloadAndSendMedia(msg, data.downloadUrl, caption, 'audio', context);
-            } else {
-                throw new Error('No download URL provided by API');
-            }
-            
-        } catch (error) {
-            await context.bot.sendMessage(context.sender, {
-                text: `❌ Failed to download YouTube MP3: ${error.message}`
-            });
-        }
+    if (preferredQuality) {
+        const matched = filtered.find(m => m.quality.toLowerCase() === preferredQuality.toLowerCase());
+        if (matched) return matched;
     }
 
-    // YouTube MP4 Download
-    async downloadYouTubeMP4(msg, params, context) {
-        if (params.length === 0) {
-            return await context.bot.sendMessage(context.sender, {
-                text: '❌ Please provide a YouTube URL.\n\n💡 Usage: `.yt <url>`'
-            });
-        }
+    return filtered[0] || null;
+}
 
-        const url = params[0];
-        
-        try {
-            const result = await this._fetchFromApi(`${this.nekoApi}/youtube?url=${encodeURIComponent(url)}&format=480&type=video`);
-            
-            if (!result.status || !result.result) {
-                throw new Error('Invalid API response');
-            }
-
-            const data = result.result;
-            
-            const caption = `╭  ✦ YouTube MP4 Download ✦  ╮\n\n` +
-                           `*◦ Title:* ${data.title || 'Unknown Title'}\n` +
-                           `*◦ Quality:* ${data.format || '480p'}\n` +
-                           `*◦ Type:* ${data.type || 'video'}`;
-
-            if (data.downloadUrl) {
-                await this._downloadAndSendMedia(msg, data.downloadUrl, caption, 'video', context);
-            } else {
-                throw new Error('No download URL provided by API');
-            }
-            
-        } catch (error) {
-            await context.bot.sendMessage(context.sender, {
-                text: `❌ Failed to download YouTube MP4: ${error.message}`
-            });
-        }
+// YouTube MP3 Download
+async downloadYouTubeMP3(msg, params, context) {
+    if (params.length === 0) {
+        return await context.bot.sendMessage(context.sender, {
+            text: '❌ Please provide a YouTube URL.\n\n💡 Usage: `.ytmp3 <url>`'
+        });
     }
+
+    const url = params[0];
+
+    try {
+        const result = await this._fetchFromApi(`${this.nekoApi}/downloader/youtube/v2?url=${encodeURIComponent(url)}`);
+
+        if (!result.success || !result.result || !result.result.medias) {
+            throw new Error('Invalid API response');
+        }
+
+        const media = this._pickMedia(result.result.medias, 'audio');
+        if (!media || !media.url) throw new Error('No audio available');
+
+        const caption = `╭  ✦ YouTube MP3 Download ✦  ╮\n\n` +
+                        `*◦ Title:* ${result.result.title || 'Unknown Title'}\n` +
+                        `*◦ Quality:* ${media.quality || '128kbps'}\n` +
+                        `*◦ Type:* audio`;
+
+        await this._downloadAndSendMedia(msg, media.url, caption, 'audio', context);
+
+    } catch (error) {
+        await context.bot.sendMessage(context.sender, {
+            text: `❌ Failed to download YouTube MP3: ${error.message}`
+        });
+    }
+}
+
+// YouTube MP4 Download
+async downloadYouTubeMP4(msg, params, context) {
+    if (params.length === 0) {
+        return await context.bot.sendMessage(context.sender, {
+            text: '❌ Please provide a YouTube URL.\n\n💡 Usage: `.yt <url>`'
+        });
+    }
+
+    const url = params[0];
+
+    try {
+        const result = await this._fetchFromApi(`${this.nekoApi}/downloader/youtube/v2?url=${encodeURIComponent(url)}`);
+
+        if (!result.success || !result.result || !result.result.medias) {
+            throw new Error('Invalid API response');
+        }
+
+        const media = this._pickMedia(result.result.medias, 'video', 'mp4 (480p)'); // default 480p
+        if (!media || !media.url) throw new Error('No video available');
+
+        const caption = `╭  ✦ YouTube MP4 Download ✦  ╮\n\n` +
+                        `*◦ Title:* ${result.result.title || 'Unknown Title'}\n` +
+                        `*◦ Quality:* ${media.quality || '480p'}\n` +
+                        `*◦ Type:* video`;
+
+        await this._downloadAndSendMedia(msg, media.url, caption, 'video', context);
+
+    } catch (error) {
+        await context.bot.sendMessage(context.sender, {
+            text: `❌ Failed to download YouTube MP4: ${error.message}`
+        });
+    }
+}
+
 
     // Helper function to validate Spotify URLs
     _isValidSpotifyUrl(url) {
