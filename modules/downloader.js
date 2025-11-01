@@ -443,37 +443,27 @@ async downloadYouTubeMP3(msg, params, context) {
 
 // YouTube MP4 Download
 async downloadYouTubeMP4(msg, params, context) {
-    if (params.length === 0) {
-        return await context.bot.sendMessage(context.sender, {
-            text: '❌ Please provide a YouTube URL.\n\n💡 Usage: `.yt <url>`'
-        });
-    }
-
     const url = params[0];
+    const result = await this._fetchFromApi(`${this.nekoApi}/downloader/youtube/v2?url=${encodeURIComponent(url)}`);
+    const media = this._pickMedia(result.result.medias, 'video', 'mp4 (480p)');
+    if (!media || !media.url) throw new Error('No video available');
 
-    try {
-        const result = await this._fetchFromApi(`${this.nekoApi}/downloader/youtube/v2?url=${encodeURIComponent(url)}`);
+    const caption = `╭  ✦ YouTube MP4 Download ✦  ╮\n\n` +
+                    `*◦ Title:* ${result.result.title || 'Unknown Title'}\n` +
+                    `*◦ Quality:* ${media.quality || '480p'}\n` +
+                    `*◦ Type:* video`;
 
-        if (!result.success || !result.result || !result.result.medias) {
-            throw new Error('Invalid API response');
-        }
-
-        const media = this._pickMedia(result.result.medias, 'video', 'mp4 (480p)'); // default 480p
-        if (!media || !media.url) throw new Error('No video available');
-
-        const caption = `╭  ✦ YouTube MP4 Download ✦  ╮\n\n` +
-                        `*◦ Title:* ${result.result.title || 'Unknown Title'}\n` +
-                        `*◦ Quality:* ${media.quality || '480p'}\n` +
-                        `*◦ Type:* video`;
-
-        await this._downloadAndSendMedia(msg, media.url, caption, 'video', context);
-
-    } catch (error) {
-        await context.bot.sendMessage(context.sender, {
-            text: `❌ Failed to download YouTube MP4: ${error.message}`
-        });
-    }
+    // Fetch and send as buffer/temporary file
+    const response = await fetch(media.url);
+    const buffer = Buffer.from(await response.arrayBuffer());
+    await context.bot.sendMessage(context.sender, {
+        video: buffer,
+        caption,
+        mimetype: 'video/mp4',
+        linkPreview: false
+    });
 }
+
 
 
     // Helper function to validate Spotify URLs
