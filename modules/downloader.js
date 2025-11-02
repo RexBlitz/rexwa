@@ -11,7 +11,6 @@ class DownloaderModule {
 
         // API endpoints
         this.delirusApi = 'https://delirius-apiofc.vercel.app/download';
-        this.nekoApi = 'https://api.nekolabs.web.id';
         this.spotifyApi = 'https://api.nekorinn.my.id/downloader/spotify';
 
         this.commands = [
@@ -389,25 +388,9 @@ class DownloaderModule {
         }
     }
 
-// Helper to pick the best media format
-_pickMedia(medias, type = 'audio', preferredQuality = null) {
-    if (!medias || !medias.length) return null;
-
-    // Filter by type (audio/video)
-    let filtered = medias.filter(m => (type === 'audio' ? m.is_audio : m.type === 'video'));
-
-    // Sort by quality: higher bitrate first
-    filtered.sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0));
-
-    if (preferredQuality) {
-        const matched = filtered.find(m => m.quality.toLowerCase() === preferredQuality.toLowerCase());
-        if (matched) return matched;
-    }
-
-    return filtered[0] || null;
-}
-
-// YouTube MP3 Download
+// ======================
+// 🎵 YouTube MP3 Download
+// ======================
 async downloadYouTubeMP3(msg, params, context) {
     if (params.length === 0) {
         return await context.bot.sendMessage(context.sender, {
@@ -418,21 +401,22 @@ async downloadYouTubeMP3(msg, params, context) {
     const url = params[0];
 
     try {
-        const result = await this._fetchFromApi(`${this.nekoApi}/downloader/youtube/v2?url=${encodeURIComponent(url)}`);
+        const apiUrl = `https://api.yupra.my.id/api/downloader/ytmp3?url=${encodeURIComponent(url)}`;
+        const result = await this._fetchFromApi(apiUrl);
 
-        if (!result.success || !result.result || !result.result.medias) {
-            throw new Error('Invalid API response');
+        if (!result.result || !result.result.link) {
+            throw new Error('Invalid API response or missing link');
         }
 
-        const media = this._pickMedia(result.result.medias, 'audio');
-        if (!media || !media.url) throw new Error('No audio available');
+        const data = result.result;
 
         const caption = `╭  ✦ YouTube MP3 Download ✦  ╮\n\n` +
-                        `*◦ Title:* ${result.result.title || 'Unknown Title'}\n` +
-                        `*◦ Quality:* ${media.quality || '128kbps'}\n` +
-                        `*◦ Type:* audio`;
+                       `*◦ Title:* ${data.title || 'Unknown Title'}\n` +
+                       `*◦ Duration:* ${this._formatDuration(Math.floor(data.duration))}\n` +
+                       `*◦ Size:* ${(data.filesize / 1024 / 1024).toFixed(2)} MB\n\n` +
+                       `*Downloaded from YouTube* 🎶`;
 
-        await this._downloadAndSendMedia(msg, media.url, caption, 'audio', context);
+        await this._downloadAndSendMedia(msg, data.link, caption, 'audio', context);
 
     } catch (error) {
         await context.bot.sendMessage(context.sender, {
@@ -441,27 +425,43 @@ async downloadYouTubeMP3(msg, params, context) {
     }
 }
 
-// YouTube MP4 Download
+// ======================
+// 🎥 YouTube MP4 Download
+// ======================
 async downloadYouTubeMP4(msg, params, context) {
+    if (params.length === 0) {
+        return await context.bot.sendMessage(context.sender, {
+            text: '❌ Please provide a YouTube URL.\n\n💡 Usage: `.yt <url>`'
+        });
+    }
+
     const url = params[0];
-    const result = await this._fetchFromApi(`${this.nekoApi}/downloader/youtube/v2?url=${encodeURIComponent(url)}`);
-    const media = this._pickMedia(result.result.medias, 'video', 'mp4 (480p)');
-    if (!media || !media.url) throw new Error('No video available');
 
-    const caption = `╭  ✦ YouTube MP4 Download ✦  ╮\n\n` +
-                    `*◦ Title:* ${result.result.title || 'Unknown Title'}\n` +
-                    `*◦ Quality:* ${media.quality || '480p'}\n` +
-                    `*◦ Type:* video`;
+    try {
+        const apiUrl = `https://api.yupra.my.id/api/downloader/ytmp4?url=${encodeURIComponent(url)}`;
+        const result = await this._fetchFromApi(apiUrl);
 
-    // Fetch and send as buffer/temporary file
-    const response = await fetch(media.url);
-    const buffer = Buffer.from(await response.arrayBuffer());
-    await context.bot.sendMessage(context.sender, {
-        video: buffer,
-        caption,
-        mimetype: 'video/mp4',
-        linkPreview: false
-    });
+        if (!result.result || !Array.isArray(result.result.formats)) {
+            throw new Error('Invalid API response or missing formats');
+        }
+
+        const data = result.result;
+        const bestFormat = data.formats[data.formats.length - 1]; // Usually last = best quality
+        const videoUrl = bestFormat.url;
+
+        const caption = `╭  ✦ YouTube MP4 Download ✦  ╮\n\n` +
+                       `*◦ Title:* ${data.title || 'Unknown Title'}\n` +
+                       `*◦ Quality:* ${bestFormat.qualityLabel || bestFormat.quality}\n` +
+                       `*◦ Resolution:* ${bestFormat.width}x${bestFormat.height}\n\n` +
+                       `*Downloaded from YouTube* 🎬`;
+
+        await this._downloadAndSendMedia(msg, videoUrl, caption, 'video', context);
+
+    } catch (error) {
+        await context.bot.sendMessage(context.sender, {
+            text: `❌ Failed to download YouTube MP4: ${error.message}`
+        });
+    }
 }
 
 
