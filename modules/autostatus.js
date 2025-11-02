@@ -1,5 +1,5 @@
 import config from '../config.js';
-import logger from '../Core/logger.js';
+import logger from '../core/logger.js';
 
 class StatusViewerModule {
     constructor(bot) {
