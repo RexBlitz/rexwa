@@ -5,6 +5,10 @@ import { exec } from 'child_process';
 import helpers from '../utils/helpers.js';
 import logger from '../core/logger.js';
 import { spawn } from 'child_process';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 class CoreModule {
     constructor(bot) {
