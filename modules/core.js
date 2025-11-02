@@ -4,6 +4,7 @@ import path from 'path';
 import { exec } from 'child_process';
 import helpers from '../utils/helpers.js';
 import logger from '../core/logger.js';
+import { spawn } from 'child_process';
 
 class CoreModule {
     constructor(bot) {
