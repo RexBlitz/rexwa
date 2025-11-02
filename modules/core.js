@@ -163,15 +163,31 @@ async ping(msg, params, context) {
 async restart(msg, params, context) {
     this.incrementCommandCount('restart');
 
-    // Optional: log to Telegram before exit
+    // Optional log to Telegram before restart
     if (this.bot.telegramBridge) {
         await this.bot.telegramBridge.logToTelegram('🔄 Bot Restart', 'Restart requested by owner.');
     }
 
-    // Force exit after short delay
-    setTimeout(() => process.exit(0), 1000);
+    // Notify user
+    await context.bot.sendMessage(context.sender, { text: '🔁 Restarting ' });
 
-    return '🔁 Restarting process...';
+    // Get current node and script info
+    const execPath = process.argv[0];
+    const scriptPath = process.argv[1];
+    const args = process.argv.slice(2);
+
+    // Spawn new instance (detached so it survives this process)
+    const child = spawn(execPath, [scriptPath, ...args], {
+        detached: true,
+        stdio: 'inherit',
+    });
+
+    // Give it a moment to start, then exit the current process
+    setTimeout(() => {
+        process.exit(0);
+    }, 1000);
+
+    return '🔄 Restarting process...';
 }
 
 
