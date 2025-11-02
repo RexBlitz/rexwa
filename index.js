@@ -1,5 +1,5 @@
-import { HyperWaBot } from './Core/bot.js';
-import logger from './Core/logger.js';
+import { HyperWaBot } from './core/bot.js';
+import logger from './core/logger.js';
 import config from './config.js';
 import * as crypto from 'crypto';
 
