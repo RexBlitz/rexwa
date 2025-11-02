@@ -3,7 +3,7 @@ import fs from 'fs-extra';
 import path from 'path';
 import { exec } from 'child_process';
 import helpers from '../utils/helpers.js';
-import logger from '../Core/logger.js';
+import logger from '../core/logger.js';
 
 class CoreModule {
     constructor(bot) {
