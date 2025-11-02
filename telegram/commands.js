@@ -1,4 +1,4 @@
-import logger from '../Core/logger.js';
+import logger from '../core/logger.js';
 
 class TelegramCommands {
     constructor(bridge) {
