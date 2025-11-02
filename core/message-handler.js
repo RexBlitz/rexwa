@@ -204,11 +204,12 @@ if (!this.checkPermissions(msg, command)) {
 
     try {
         await handler.execute(msg, params, {
-            bot: this.bot,
-            sender,
-            participant,
-            isGroup: sender.endsWith('@g.us')
-        });
+    bot: this.bot,
+    sender: chatJid,
+    participant: executorJid,
+    isGroup: chatJid.endsWith('@g.us')
+});
+
 
         // Clear typing indicator on success
         try {
