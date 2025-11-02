@@ -113,9 +113,32 @@ class MessageHandler {
     }
 
 async handleCommand(msg, text) {
-    const sender = msg.key.remoteJid;
-    const participant = msg.key.participant || sender;
-    const prefix = config.get('bot.prefix');
+    const chatJid = msg.key.remoteJid;
+const isGroup = chatJid.endsWith('@g.us');
+const participantJid = msg.key.participant || chatJid;
+const prefix = config.get('bot.prefix');
+
+// 🧠 Figure out who executed the command
+let executorJid;
+if (msg.key.fromMe) {
+    executorJid = config.get('bot.owner') || this.bot.sock.user?.id;
+} else if (isGroup) {
+    executorJid = participantJid;
+} else {
+    executorJid = chatJid;
+}
+
+// 🪪 Resolve readable display name
+const contact =
+    this.bot.store?.contacts?.[executorJid] ||
+    this.bot.store?.contacts?.[executorJid.split('@')[0] + '@s.whatsapp.net'];
+const displayName =
+    contact?.name ||
+    contact?.notify ||
+    contact?.verifiedName ||
+    contact?.pushName ||
+    executorJid.split('@')[0];
+
 
     const args = text.slice(prefix.length).trim().split(/\s+/);
     const command = args[0].toLowerCase();
@@ -202,12 +225,15 @@ if (!this.checkPermissions(msg, command)) {
             // Ignore reaction errors
         }
 
-        logger.info(`✅ Command executed: ${command} by ${participant}`);
+        logger.info(`✅ Command executed: ${command} by ${displayName} (${executorJid})`);
 
-        if (this.bot.telegramBridge) {
-            await this.bot.telegramBridge.logToTelegram('📝 Command Executed',
-                `Command: ${command}\nUser: ${participant}\nChat: ${sender}`);
-        }
+if (this.bot.telegramBridge) {
+    await this.bot.telegramBridge.logToTelegram(
+        '📝 Command Executed',
+        `Command: ${command}\nUser: ${displayName}\nJID: ${executorJid}\nChat: ${chatJid}`
+    );
+}
+
 
     } catch (error) {
         // Clear typing indicator on error
