@@ -172,7 +172,8 @@ if (!this.checkPermissions(msg, command)) {
     return; // silently ignore
 }
 
-    const userId = participant.split('@')[0];
+    const userId = executorJid.split('@')[0];
+
     if (config.get('features.rateLimiting')) {
         const canExecute = await rateLimiter.checkCommandLimit(userId);
         if (!canExecute) {
