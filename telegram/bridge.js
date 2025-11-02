@@ -1,7 +1,7 @@
 import TelegramBot from 'node-telegram-bot-api';
 import TelegramCommands from './commands.js';
 import config from '../config.js';
-import logger from '../Core/logger.js';
+import logger from '../core/logger.js';
 import { connectDb } from '../utils/db.js';
 import fs from 'fs-extra';
 import path from 'path';
