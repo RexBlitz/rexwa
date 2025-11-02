@@ -1,7 +1,7 @@
 import {  GoogleGenerativeAI, HarmBlockThreshold, HarmCategory  } from '@google/generative-ai';
 import {  downloadContentFromMessage  } from '@whiskeysockets/baileys';
 import config from '../config.js';
-import logger from '../Core/logger.js';
+import logger from '../core/logger.js';
 // FIX/WORKAROUND: Changing to namespace import to handle potential CommonJS/ES Module export conflicts
 import * as dbModule from '../utils/db.js'; 
 const Database = dbModule.default || dbModule.Database || dbModule; // Attempt to get the constructor
