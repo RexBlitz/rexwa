@@ -23,54 +23,84 @@ class ModuleLoader {
 
     setupModuleCommands() {
         const loadModuleCommand = {
-            name: 'lm',
-            description: 'Load a module from file',
-            usage: '.lm (reply to a .js or .mjs file)',
-            permissions: 'owner',
-            execute: async (msg, params, context) => {
-                const fileName = msg.message?.documentMessage?.fileName;
-                if (!fileName || (!fileName.endsWith('.js') && !fileName.endsWith('.mjs'))) {
-                    return context.bot.sendMessage(context.sender, {
-                        text: '🔧 *Load Module*\n\n❌ Please reply to a JavaScript (.js or .mjs) file to load it as a module.'
-                    });
-                }
+    name: 'lm',
+    description: 'Load a module from file',
+    usage: '.lm (reply to a .js or .mjs file)',
+    permissions: 'owner',
+    execute: async (msg, params, context) => {
+        try {
+            // Get the quoted message (if user replied to a file)
+            const quoted = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage;
+            const docMsg = msg.message?.documentMessage || quoted?.documentMessage;
 
-                try {
-                    const processingMsg = await context.bot.sendMessage(context.sender, {
-                        text: '⚡ *Loading Module*\n\n🔄 Downloading and installing module...\n⏳ Please wait...'
-                    });
-
-                    // Dynamic import for baileys, using destructuring on the result
-                    const { downloadContentFromMessage } = await import('@whiskeysockets/baileys');
-                    const stream = await downloadContentFromMessage(msg.message.documentMessage, 'document');
-
-                    const chunks = [];
-                    for await (const chunk of stream) {
-                        chunks.push(chunk);
-                    }
-                    const buffer = Buffer.concat(chunks);
-
-                    const customModulesPath = path.join(__dirname, '../custom_modules');
-                    await fs.ensureDir(customModulesPath);
-
-                    const filePath = path.join(customModulesPath, fileName);
-                    await fs.writeFile(filePath, buffer);
-
-                    await this.loadModule(filePath, false);
-
-                    await context.bot.sock.sendMessage(context.sender, {
-                        text: `✅ *Module Loaded Successfully*\n\n📦 Module: \`${fileName}\`\n📁 Location: Custom Modules\n🎯 Status: Active\n⏰ ${new Date().toLocaleTimeString()}`,
-                        edit: processingMsg.key
-                    });
-
-                } catch (error) {
-                    logger.error('Failed to load module:', error);
-                    await context.bot.sendMessage(context.sender, {
-                        text: `❌ *Module Load Failed*\n\n🚫 Error: ${error.message}\n🔧 Please check the module file format.`
-                    });
-                }
+            if (!docMsg) {
+                return context.bot.sendMessage(context.sender, {
+                    text: '🔧 *Load Module*\n\n❌ Please reply to or send a JavaScript (.js, .mjs, or .ejs) file to load it as a module.'
+                });
             }
-        };
+
+            // Try to get filename and MIME type
+            let fileName = docMsg?.fileName || 'module.js';
+            const mime = docMsg?.mimetype || '';
+
+            // If WhatsApp stripped file name, generate one
+            if (!fileName || fileName === 'unknown') {
+                if (mime.includes('javascript')) fileName = `module_${Date.now()}.js`;
+                else fileName = `custom_${Date.now()}.js`;
+            }
+
+            // Accept only JS-based extensions
+            if (!fileName.endsWith('.js') && !fileName.endsWith('.mjs') && !fileName.endsWith('.ejs')) {
+                return context.bot.sendMessage(context.sender, {
+                    text: '🔧 *Load Module*\n\n❌ Please reply to or send a JavaScript (.js, .mjs, or .ejs) file to load it as a module.'
+                });
+            }
+
+            // Normalize `.ejs` to `.js`
+            if (fileName.endsWith('.ejs')) {
+                fileName = fileName.replace(/\.ejs$/, '.js');
+            }
+
+            // Notify user that it's working
+            const processingMsg = await context.bot.sendMessage(context.sender, {
+                text: '⚡ *Loading Module*\n\n🔄 Downloading and installing module...\n⏳ Please wait...'
+            });
+
+            // Import Baileys utility dynamically
+            const { downloadContentFromMessage } = await import('@whiskeysockets/baileys');
+            const stream = await downloadContentFromMessage(docMsg, 'document');
+
+            const chunks = [];
+            for await (const chunk of stream) {
+                chunks.push(chunk);
+            }
+            const buffer = Buffer.concat(chunks);
+
+            // Save the file in custom_modules folder
+            const customModulesPath = path.join(__dirname, '../custom_modules');
+            await fs.ensureDir(customModulesPath);
+
+            const filePath = path.join(customModulesPath, fileName);
+            await fs.writeFile(filePath, buffer);
+
+            // Load the module dynamically
+            await this.loadModule(filePath, false);
+
+            // Notify success
+            await context.bot.sock.sendMessage(context.sender, {
+                text: `✅ *Module Loaded Successfully*\n\n📦 Module: \`${fileName}\`\n📁 Location: Custom Modules\n🎯 Status: Active\n⏰ ${new Date().toLocaleTimeString()}`,
+                edit: processingMsg.key
+            });
+
+        } catch (error) {
+            logger.error('Failed to load module:', error);
+            await context.bot.sendMessage(context.sender, {
+                text: `❌ *Module Load Failed*\n\n🚫 Error: ${error.message}\n🔧 Please check the module file format.`
+            });
+        }
+    }
+};
+
 
         const unloadModuleCommand = {
             name: 'ulm',
