@@ -1,7 +1,7 @@
 import {  GoogleGenerativeAI, HarmBlockThreshold, HarmCategory  } from '@google/generative-ai';
 import {  downloadContentFromMessage  } from '@whiskeysockets/baileys';
 import config from '../config.js';
-import logger from '../Core/logger.js';
+import logger from '../core/logger.js';
 
 /**
  * GeminiVisionModule: A module for analyzing images and videos using Google Gemini Vision API.
