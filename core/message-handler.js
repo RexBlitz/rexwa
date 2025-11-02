@@ -114,31 +114,33 @@ class MessageHandler {
 
 async handleCommand(msg, text) {
     const chatJid = msg.key.remoteJid;
-const isGroup = chatJid.endsWith('@g.us');
-const participantJid = msg.key.participant || chatJid;
-const prefix = config.get('bot.prefix');
+    const isGroup = chatJid.endsWith('@g.us');
+    const participantJid = msg.key.participant || chatJid;
+    const prefix = config.get('bot.prefix');
 
-// 🧠 Figure out who executed the command
-let executorJid;
-if (msg.key.fromMe) {
-    executorJid = config.get('bot.owner') || this.bot.sock.user?.id;
-} else if (isGroup) {
-    executorJid = participantJid;
-} else {
-    executorJid = chatJid;
-}
+    // FIX: Define sender variable
+    const sender = chatJid;
 
-// 🪪 Resolve readable display name
-const contact =
-    this.bot.store?.contacts?.[executorJid] ||
-    this.bot.store?.contacts?.[executorJid.split('@')[0] + '@s.whatsapp.net'];
-const displayName =
-    contact?.name ||
-    contact?.notify ||
-    contact?.verifiedName ||
-    contact?.pushName ||
-    executorJid.split('@')[0];
+    // 🧠 Figure out who executed the command
+    let executorJid;
+    if (msg.key.fromMe) {
+        executorJid = config.get('bot.owner') || this.bot.sock.user?.id;
+    } else if (isGroup) {
+        executorJid = participantJid;
+    } else {
+        executorJid = chatJid;
+    }
 
+    // 🪪 Resolve readable display name
+    const contact =
+        this.bot.store?.contacts?.[executorJid] ||
+        this.bot.store?.contacts?.[executorJid.split('@')[0] + '@s.whatsapp.net'];
+    const displayName =
+        contact?.name ||
+        contact?.notify ||
+        contact?.verifiedName ||
+        contact?.pushName ||
+        executorJid.split('@')[0];
 
     const args = text.slice(prefix.length).trim().split(/\s+/);
     const command = args[0].toLowerCase();
@@ -153,24 +155,24 @@ const displayName =
         // Ignore presence errors
     }
 
-if (!this.checkPermissions(msg, command)) {
-    if (config.get('features.sendPermissionError', false)) {
+    if (!this.checkPermissions(msg, command)) {
+        if (config.get('features.sendPermissionError', false)) {
+            try {
+                await this.bot.sock.sendPresenceUpdate('paused', sender);
+            } catch (error) {
+                // Ignore presence errors
+            }
+            return this.bot.sendMessage(sender, {
+                text: '❌ You don\'t have permission to use this command.'
+            });
+        }
         try {
             await this.bot.sock.sendPresenceUpdate('paused', sender);
         } catch (error) {
             // Ignore presence errors
         }
-        return this.bot.sendMessage(sender, {
-            text: '❌ You don\'t have permission to use this command.'
-        });
+        return; // silently ignore
     }
-    try {
-        await this.bot.sock.sendPresenceUpdate('paused', sender);
-    } catch (error) {
-        // Ignore presence errors
-    }
-    return; // silently ignore
-}
 
     const userId = executorJid.split('@')[0];
 
@@ -193,82 +195,79 @@ if (!this.checkPermissions(msg, command)) {
     const respondToUnknown = config.get('features.respondToUnknownCommands', false);
 
     if (handler) {
-    try {
-        // Always add ⏳ reaction for ALL commands
-        await this.bot.sock.sendMessage(sender, {
-            react: { key: msg.key, text: '⏳' }
-        });
-    } catch (error) {
-        // Ignore reaction errors
-    }
-
-    try {
-        await handler.execute(msg, params, {
-    bot: this.bot,
-    sender: chatJid,
-    participant: executorJid,
-    isGroup: chatJid.endsWith('@g.us')
-});
-
-
-        // Clear typing indicator on success
         try {
-            await this.bot.sock.sendPresenceUpdate('paused', sender);
-        } catch (error) {
-            // Ignore presence errors
-        }
-
-        // Clear reaction on success for ALL commands
-        try {
+            // Always add ⏳ reaction for ALL commands
             await this.bot.sock.sendMessage(sender, {
-                react: { key: msg.key, text: '' }
+                react: { key: msg.key, text: '⏳' }
             });
         } catch (error) {
             // Ignore reaction errors
         }
 
-        logger.info(`✅ Command executed: ${command} by ${displayName} (${executorJid})`);
-
-if (this.bot.telegramBridge) {
-    await this.bot.telegramBridge.logToTelegram(
-        '📝 Command Executed',
-        `Command: ${command}\nUser: ${displayName}\nJID: ${executorJid}\nChat: ${chatJid}`
-    );
-}
-
-
-    } catch (error) {
-        // Clear typing indicator on error
         try {
-            await this.bot.sock.sendPresenceUpdate('paused', sender);
-        } catch (error) {
-            // Ignore presence errors
-        }
-
-        // Keep ❌ reaction on error (don't clear it)
-        try {
-            await this.bot.sock.sendMessage(sender, {
-                react: { key: msg.key, text: '❌' }
+            await handler.execute(msg, params, {
+                bot: this.bot,
+                sender: chatJid,
+                participant: executorJid,
+                isGroup: chatJid.endsWith('@g.us')
             });
+
+            // Clear typing indicator on success
+            try {
+                await this.bot.sock.sendPresenceUpdate('paused', sender);
+            } catch (error) {
+                // Ignore presence errors
+            }
+
+            // Clear reaction on success for ALL commands
+            try {
+                await this.bot.sock.sendMessage(sender, {
+                    react: { key: msg.key, text: '' }
+                });
+            } catch (error) {
+                // Ignore reaction errors
+            }
+
+            logger.info(`✅ Command executed: ${command} by ${displayName} (${executorJid})`);
+
+            if (this.bot.telegramBridge) {
+                await this.bot.telegramBridge.logToTelegram(
+                    '📝 Command Executed',
+                    `Command: ${command}\nUser: ${displayName}\nJID: ${executorJid}\nChat: ${chatJid}`
+                );
+            }
+
         } catch (error) {
-            // Ignore reaction errors
+            // Clear typing indicator on error
+            try {
+                await this.bot.sock.sendPresenceUpdate('paused', sender);
+            } catch (error) {
+                // Ignore presence errors
+            }
+
+            // Keep ❌ reaction on error (don't clear it)
+            try {
+                await this.bot.sock.sendMessage(sender, {
+                    react: { key: msg.key, text: '❌' }
+                });
+            } catch (error) {
+                // Ignore reaction errors
+            }
+
+            logger.error(`❌ Command failed: ${command} | ${error.message || 'No message'}`);
+            logger.debug(error.stack || error);
+
+            if (!error._handledBySmartError && error?.message) {
+                await this.bot.sendMessage(sender, {
+                    text: `❌ Command failed: ${error.message}`
+                });
+            }
+
+            if (this.bot.telegramBridge) {
+                await this.bot.telegramBridge.logToTelegram('❌ Command Error',
+                    `Command: ${command}\nError: ${error.message}\nUser: ${displayName}`);
+            }
         }
-
-        logger.error(`❌ Command failed: ${command} | ${error.message || 'No message'}`);
-        logger.debug(error.stack || error);
-
-        if (!error._handledBySmartError && error?.message) {
-            await this.bot.sendMessage(sender, {
-                text: `❌ Command failed: ${error.message}`
-            });
-        }
-
-        if (this.bot.telegramBridge) {
-            await this.bot.telegramBridge.logToTelegram('❌ Command Error',
-                `Command: ${command}\nError: ${error.message}\nUser: ${participant}`);
-        }
-    }
-
 
     } else if (respondToUnknown) {
         try {
