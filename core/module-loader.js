@@ -233,7 +233,10 @@ setupHelpSystem() {
         usage: '.help [module_name] | .help 1|2 | .help show 1|2|3',
         permissions: 'public',
         execute: async (msg, params, context) => {
-        const userId = context.sender.split('@')[0];
+        const userId = msg.key.fromMe 
+        ? config.get('bot.owner').split('@')[0] 
+        : (msg.key.participant || msg.key.remoteJid || context.sender).split('@')[0];
+            
         const userPerms = getUserPermissions(userId);
 
         const helpConfig = config.get('help') || {};
