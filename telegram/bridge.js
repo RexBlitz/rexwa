@@ -763,7 +763,8 @@ async handleStatusMessage(whatsappMsg, text) {
         if (!config.get('telegram.features.statusSync')) return;
         
         const participant = whatsappMsg.key.participant;
-        // ✅ AWAIT the phone number retrieval
+        
+        // ✅ AWAIT the phone number retrieval (THIS WAS MISSING!)
         const phone = await this.getPhoneNumberFromJid(participant);
         const contactName = this.contactMappings.get(phone) || `+${phone}`;
         
