@@ -31,7 +31,7 @@ class HyperWaBot {
         this.moduleLoader = new ModuleLoader(this);
         this.qrCodeSent = false;
         this.useMongoAuth = config.get('auth.useMongoAuth', false);
-        
+        this.isFirstConnection = true;
         // Initialize the enhanced store with advanced options
         this.store = makeInMemoryStore({
             logger: logger.child({ module: 'store' }),
@@ -570,31 +570,37 @@ class HyperWaBot {
     }
 
     async onConnectionOpen() {
-        logger.info(`✅ Connected to WhatsApp! User: ${this.sock.user?.id || 'Unknown'}`);
+    logger.info(`✅ Connected to WhatsApp! User: ${this.sock.user?.id || 'Unknown'}`);
 
-        if (!config.get('bot.owner') && this.sock.user) {
-            config.set('bot.owner', this.sock.user.id);
-            logger.info(`👑 Owner set to: ${this.sock.user.id}`);
-        }
+    if (!config.get('bot.owner') && this.sock.user) {
+        config.set('bot.owner', this.sock.user.id);
+        logger.info(`👑 Owner set to: ${this.sock.user.id}`);
+    }
 
-        if (this.telegramBridge) {
-            try {
-                await this.telegramBridge.setupWhatsAppHandlers();
-            } catch (err) {
-                logger.warn('⚠️ Failed to setup Telegram WhatsApp handlers:', err.message);
-            }
-        }
-
-        await this.sendStartupMessage();
-
-        if (this.telegramBridge) {
-            try {
-                await this.telegramBridge.syncWhatsAppConnection();
-            } catch (err) {
-                logger.warn('⚠️ Telegram sync error:', err.message);
-            }
+    if (this.telegramBridge) {
+        try {
+            await this.telegramBridge.setupWhatsAppHandlers();
+        } catch (err) {
+            logger.warn('⚠️ Failed to setup Telegram WhatsApp handlers:', err.message);
         }
     }
+
+    // Only send startup message on first connection
+    if (this.isFirstConnection) {
+        await this.sendStartupMessage();
+        this.isFirstConnection = false;
+    } else {
+        logger.info('🔄 Reconnected - skipping startup message');
+    }
+
+    if (this.telegramBridge) {
+        try {
+            await this.telegramBridge.syncWhatsAppConnection();
+        } catch (err) {
+            logger.warn('⚠️ Telegram sync error:', err.message);
+        }
+    }
+}
 
     async sendStartupMessage() {
         const owner = config.get('bot.owner');
@@ -605,12 +611,7 @@ class HyperWaBot {
         
         const startupMessage = `🚀 *${config.get('bot.name')} v${config.get('bot.version')}* is now online!\n\n` +
                               `🔥 *HyperWa Features Active:*\n` +
-                              `• 📱 Modular Architecture\n` +
-                              `• 🗄️ Enhanced Data Store: ✅\n` +
-                              `• 📊 Store Stats: ${storeStats.chats} chats, ${storeStats.contacts} contacts, ${storeStats.messages} messages\n` +
-                              `• 🔐 Auth Method: ${authMethod}\n` +
                               `• 🤖 Telegram Bridge: ${config.get('telegram.enabled') ? '✅' : '❌'}\n` +
-                              `• 🔧 Custom Modules: ${config.get('features.customModules') ? '✅' : '❌'}\n` +
                               `Type *${config.get('bot.prefix')}help* for available commands!`;
 
         try {
