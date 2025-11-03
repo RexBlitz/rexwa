@@ -40,6 +40,9 @@ class TelegramCommands {
                 case '/clearfilters':
                     await this.handleClearFilters(msg.chat.id);
                     break;
+                case '/updatetopics': // 🆕 New Command Case
+                    await this.handleUpdateTopics(msg.chat.id);
+                    break;
                 default:
                     await this.handleMenu(msg.chat.id);
             }
@@ -162,6 +165,21 @@ class TelegramCommands {
         await this.bridge.clearFilters();
         await this.bridge.telegramBot.sendMessage(chatId, '🧹 All filters cleared.', { parse_mode: 'Markdown' });
     }
+    
+    // 🆕 New Command Handler
+    async handleUpdateTopics(chatId) {
+        await this.bridge.telegramBot.sendMessage(chatId, '🔄 **Updating Telegram topic names...** This may take a moment.', { parse_mode: 'Markdown' });
+        try {
+            await this.bridge.updateTopicNames(); 
+
+            await this.bridge.telegramBot.sendMessage(chatId,
+                '✅ **Telegram topic names update complete.**',
+                { parse_mode: 'Markdown' });
+        } catch (error) {
+            logger.error(`❌ Error updating topic names:`, error);
+            await this.bridge.telegramBot.sendMessage(chatId, `❌ Failed to update topic names: ${error.message}`, { parse_mode: 'Markdown' });
+        }
+    }
 
     async handleMenu(chatId) {
         const message = `ℹ️ *Available Commands*\n\n` +
@@ -172,7 +190,8 @@ class TelegramCommands {
             `/searchcontact <name/phone> - Search contacts\n` +
             `/addfilter <word> - Block WA messages starting with it\n` +
             `/filters - Show current filters\n` +
-            `/clearfilters - Remove all filters`;
+            `/clearfilters - Remove all filters\n` +
+            `/updatetopics - Update Telegram topic names (Contacts/PNs)`; // Updated Menu
         await this.bridge.telegramBot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
     }
 
@@ -186,7 +205,8 @@ class TelegramCommands {
                 { command: 'searchcontact', description: 'Search WhatsApp contacts' },
                 { command: 'addfilter', description: 'Add blocked word' },
                 { command: 'filters', description: 'Show blocked words' },
-                { command: 'clearfilters', description: 'Clear all filters' }
+                { command: 'clearfilters', description: 'Clear all filters' },
+                { command: 'updatetopics', description: 'Update Telegram topic names (Contacts/PNs)' } // New Bot Command
             ]);
             logger.info('✅ Telegram bot commands registered');
         } catch (error) {
