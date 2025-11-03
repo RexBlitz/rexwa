@@ -1059,9 +1059,11 @@ async getOrCreateTopic(chatJid, whatsappMsg) {
                 }
                 iconColor = 0x6FB9F0;
             } else {
-                // ✅ AWAIT the phone number retrieval
+                // ✅ AWAIT the phone number retrieval (PN)
                 const phone = await this.getPhoneNumberFromJid(chatJid);
                 const contactName = this.contactMappings.get(phone);
+                
+                // ⚠️ MODIFIED LOGIC: Use Contact Name > Resolved Phone Number
                 topicName = contactName || `+${phone}`;
             }
 
