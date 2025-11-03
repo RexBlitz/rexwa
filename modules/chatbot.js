@@ -2,9 +2,8 @@ import {  GoogleGenerativeAI, HarmBlockThreshold, HarmCategory  } from '@google/
 import {  downloadContentFromMessage  } from '@whiskeysockets/baileys';
 import config from '../config.js';
 import logger from '../core/logger.js';
-// FIX/WORKAROUND: Changing to namespace import to handle potential CommonJS/ES Module export conflicts
 import * as dbModule from '../utils/db.js'; 
-const Database = dbModule.default || dbModule.Database || dbModule; // Attempt to get the constructor
+const Database = dbModule.default || dbModule.Database || dbModule;
 
 class ChatBotModule {
     constructor(bot) {
@@ -18,7 +17,7 @@ class ChatBotModule {
         };
 
         // Gemini API configuration
-        this.apiKey = "AIzaSyC1-5hrYIdfNsg2B7bcb5Qs3ib1MIWlbOE"; // Consider moving to config
+        this.apiKey = "AIzaSyCjsufhrqepM1uYNji8hwhf_mQnDCjKL60"; // Consider moving to config
         this.genAI = null;
         this.model = null;
 
