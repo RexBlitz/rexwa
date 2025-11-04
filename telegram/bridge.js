@@ -328,29 +328,44 @@ async clearFilters() {
     }
 
 /**
- * Resolves a phone number (PN) from any WhatsApp JID — supports LID ↔ PN mapping.
+ * Resolves a Phone Number (PN) or a stable identifier from any WhatsApp JID (PN-JID or LID-JID).
  * Returns phone number string (without @s.whatsapp.net) or fallback identifier.
  */
 async getPhoneNumberFromJid(jid) {
     if (!jid || jid.includes('broadcast')) return jid.split('@')[0] || jid;
-
-    // 1️⃣ Try from contact store
+    
+    // 1️⃣ Try from contact store (most reliable source for current identity)
     const contact = this.whatsappBot.store?.contacts?.[jid];
-    if (contact?.phoneNumber) return contact.phoneNumber.split('@')[0];
+    if (contact) {
+        // Prefer the actual PN if available
+        if (contact.phoneNumber) {
+            return contact.phoneNumber.split('@')[0];
+        }
 
-    // 2️⃣ Try LID → PN via Baileys internal mapping
+        // Fallback for special cases where JID is the only identifier
+        const prefix = jid.split('@')[0];
+        if (prefix.startsWith('+')) return prefix.replace('+', '');
+        
+        // If contact exists but no PN, return the ID prefix (which could be the LID)
+        return prefix;
+    }
+
+    // 2️⃣ Try LID/PN lookups via Baileys internal mapping (only if not found in cache)
     const lidMapping = this.whatsappBot.sock?.signalRepository?.lidMapping;
     if (lidMapping) {
         try {
             const lidPart = jid.split('@')[0];
-            const pn = await lidMapping.getPNForLID(lidPart);
-            if (pn) return pn.replace(/@s\\.whatsapp\\.net$/, '');
+            // Check if it's an LID and try to resolve the PN
+            if (!/^\d+$/.test(lidPart)) {
+                 const pn = await lidMapping.getPNForLID(lidPart);
+                 if (pn) return pn.replace(/@s\\.whatsapp\\.net$/, '');
+            }
         } catch (err) {
             logger.debug(`LID mapping lookup failed for ${jid}:`, err.message);
         }
     }
 
-    // 3️⃣ Fallback — use prefix
+    // 3️⃣ Fallback — use JID prefix
     const prefix = jid.split('@')[0];
     if (prefix.startsWith('+')) return prefix.replace('+', '');
     return prefix;
