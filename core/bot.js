@@ -34,24 +34,25 @@ class HyperWaBot {
         this.isFirstConnection = true;
         // Initialize the enhanced store with advanced options
         this.store = makeInMemoryStore({
-            logger: logger.child({ module: 'store' }),
-            filePath: config.get('store.filePath', './whatsapp-store.json'),
-            autoSaveInterval: config.get('store.autoSaveInterval', 30000)
-        });
-
-        // Load existing store data on startup
-        this.store.loadFromFile();
-        
-        // Enhanced features from example - SIMPLE VERSION
-        this.msgRetryCounterCache = new NodeCache();
-        this.onDemandMap = new Map();
-        
-        // Simple memory cleanup
-        setInterval(() => {
-            if (this.onDemandMap.size > 100) {
-                this.onDemandMap.clear();
-            }
-        }, 300000);
+        logger: logger.child({ module: 'store' }),
+        filePath: './whatsapp-store.json',
+        autoSaveInterval: 30000
+    });
+    
+    // Load existing data
+    this.store.loadFromFile();
+    
+    // ✅ Proper cache setup
+    this.msgRetryCounterCache = new NodeCache();
+    this.onDemandMap = new Map();
+    
+    // Memory cleanup
+    setInterval(() => {
+        if (this.onDemandMap.size > 100) {
+            this.onDemandMap.clear();
+        }
+    }, 300000); // 5 minutes
+}
 
         // Store event listeners for advanced features
         this.setupStoreEventListeners();
@@ -162,28 +163,25 @@ class HyperWaBot {
 
         try {
             this.sock = makeWASocket({
-                auth: {
-                    creds: state.creds,
-                    keys: makeCacheableSignalKeyStore(state.keys, logger.child({ module: 'signal-keys' })),
-                },
-                version,
-                printQRInTerminal: false,
-                logger: logger.child({ module: 'baileys' }),
-                msgRetryCounterCache: this.msgRetryCounterCache,
-                generateHighQualityLinkPreview: true,
-                getMessage: this.getMessage.bind(this),
-                browser: ['HyperWa', 'Chrome', '3.0'],
-                // Enable message history for better message retrieval
-                syncFullHistory: false,
-                markOnlineOnConnect: false,
-                // Add firewall bypass
-                firewall: false
-            });
+        auth: {
+            creds: state.creds,
+            keys: makeCacheableSignalKeyStore(state.keys, logger.child({ module: 'keys' })),
+        },
+        version,
+        logger: logger.child({ module: 'baileys' }),
+        msgRetryCounterCache: this.msgRetryCounterCache,
+        generateHighQualityLinkPreview: true,
+        getMessage: this.getMessage.bind(this), // ✅ Bind properly
+        browser: ['HyperWa', 'Chrome', '3.0'],
+        syncFullHistory: false,
+        markOnlineOnConnect: false,
+        firewall: false,
+        printQRInTerminal: false
+    });
 
-            // CRITICAL: Bind store to socket events for data persistence
-            this.store.bind(this.sock.ev);
-            logger.info('🔗 Store bound to WhatsApp socket events');
-
+    // ✅ CRITICAL: Bind store to socket events
+    this.store.bind(this.sock.ev);
+    logger.info('🔗 Store bound to socket');
             const connectionPromise = new Promise((resolve, reject) => {
                 const connectionTimeout = setTimeout(() => {
                     if (!this.sock.user) {
@@ -214,23 +212,28 @@ class HyperWaBot {
 
     // Enhanced getMessage with store lookup
     async getMessage(key) {
-        try {
-            // Try to get message from store first
-            if (key?.remoteJid && key?.id) {
-                const storedMessage = this.store.loadMessage(key.remoteJid, key.id);
-                if (storedMessage) {
-                    logger.debug(`📨 Retrieved message from store: ${key.id}`);
-                    return storedMessage;
-                }
-            }
-            
-            // Return undefined instead of fake message to avoid decryption issues
-            return undefined;
-        } catch (error) {
-            logger.warn('⚠️ Error retrieving message:', error.message);
+    try {
+        if (!key?.remoteJid || !key?.id) {
             return undefined;
         }
+
+        // ✅ Try to get from store first
+        const storedMessage = this.store.loadMessage(key.remoteJid, key.id);
+        if (storedMessage?.message) {
+            logger.debug(`📨 Retrieved from store: ${key.id}`);
+            return storedMessage.message;
+        }
+
+        // ✅ Return undefined (Baileys will handle retry)
+        // Never return fake messages - causes decryption issues
+        return undefined;
+        
+    } catch (error) {
+        logger.debug('⚠️ getMessage error:', error.message);
+        return undefined;
     }
+}
+
 
     // Store-powered helper methods
     
