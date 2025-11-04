@@ -141,7 +141,8 @@ class HyperWaBot {
     }
 
     await this.moduleLoader.loadModules();
-    await this.();
+    await this.startWhatsApp();
+
     logger.info('✅ HyperWa Userbot with Enhanced LID & Pairing Support initialized successfully!');
   }
 
