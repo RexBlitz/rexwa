@@ -369,20 +369,32 @@ class HyperWaBot {
 
   // Enhanced LID-aware contact resolution
   getContactInfo(jid) {
+    if (!jid) return null;
+    
+    // Try direct lookup first
     let contact = this.store.contacts[jid];
     if (contact) return contact;
 
+    // If not found, try LID/PN resolution
     if (this.sock?.signalRepository?.lidMapping) {
-      if (isPnUser(jid)) {
-        const lid = this.sock.signalRepository.lidMapping.getLIDForPN(jid);
-        if (lid) {
-          contact = this.store.contacts[lid];
+      try {
+        const prefix = jid.split('@')[0];
+        
+        if (isPnUser(jid)) {
+          // JID is a PN, try to find LID contact
+          const lid = this.sock.signalRepository.lidMapping.getLIDForPN(prefix);
+          if (lid) {
+            contact = this.store.contacts[`${lid}@s.whatsapp.net`];
+          }
+        } else {
+          // JID is an LID, try to find PN contact
+          const pn = this.sock.signalRepository.lidMapping.getPNForLID(prefix);
+          if (pn) {
+            contact = this.store.contacts[`${pn}@s.whatsapp.net`];
+          }
         }
-      } else {
-        const pn = this.sock.signalRepository.lidMapping.getPNForLID(jid);
-        if (pn) {
-          contact = this.store.contacts[pn];
-        }
+      } catch (error) {
+        logger.debug('LID contact resolution failed:', error.message);
       }
     }
 
@@ -405,6 +417,96 @@ class HyperWaBot {
     }
     
     return jid;
+  }
+
+  /**
+   * Get phone number from JID using official LID resolution
+   */
+  async getPhoneNumberFromJid(jid) {
+    if (!jid) return null;
+    
+    const prefix = jid.split('@')[0];
+    const isGroupOrSpecial = jid.endsWith('@g.us') || jid.includes('broadcast');
+    
+    if (isGroupOrSpecial) {
+      return prefix;
+    }
+
+    // Try to get from contact info first
+    const contact = this.getContactInfo(jid);
+    if (contact?.phoneNumber) {
+      return contact.phoneNumber.replace(/^\+/, '');
+    }
+
+    // Use Baileys LID mapping
+    if (this.sock?.signalRepository?.lidMapping) {
+      try {
+        // If it's already a PN, return it
+        if (/^\d+$/.test(prefix)) {
+          return prefix;
+        }
+        
+        // Try to resolve LID to PN
+        const pn = await this.sock.signalRepository.lidMapping.getPNForLID(prefix);
+        if (pn) {
+          return pn;
+        }
+      } catch (err) {
+        logger.debug('LID mapping lookup failed:', err.message);
+      }
+    }
+
+    // Final fallback
+    return prefix.startsWith('+') ? prefix.replace('+', '') : prefix;
+  }
+
+  /**
+   * Handle LID mapping updates - called by bridge
+   */
+  async handleLIDMappingUpdate(mapping) {
+    try {
+      logger.info(`🔄 Processing ${Object.keys(mapping).length} LID mappings`);
+      
+      // Update store contacts with new mappings
+      for (const [pn, lid] of Object.entries(mapping)) {
+        logger.debug(`🔁 LID Mapping: ${pn} -> ${lid}`);
+        // The store will automatically handle these through the event system
+      }
+      
+      // Trigger contact resync in bridge if available
+      if (this.telegramBridge?.syncContacts) {
+        await this.telegramBridge.syncContacts();
+      }
+    } catch (error) {
+      logger.error('❌ Failed to handle LID mapping update:', error);
+    }
+  }
+
+  /**
+   * Enhanced contact resolution with LID support
+   */
+  getContactName(jid) {
+    const contact = this.getContactInfo(jid);
+    if (contact?.name) return contact.name;
+    
+    // Try to resolve via phone number
+    if (this.sock?.signalRepository?.lidMapping) {
+      try {
+        const phone = this.getPhoneNumberFromJid(jid);
+        if (phone) {
+          // Look for contact by phone number
+          for (const [contactJid, contactInfo] of Object.entries(this.store.contacts)) {
+            if (contactInfo.phoneNumber === phone || contactInfo.phoneNumber === `+${phone}`) {
+              return contactInfo.name;
+            }
+          }
+        }
+      } catch (error) {
+        logger.debug('Contact name resolution failed:', error.message);
+      }
+    }
+    
+    return null;
   }
 
   // Enhanced message search with LID support
