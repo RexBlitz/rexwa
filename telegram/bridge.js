@@ -263,8 +263,19 @@ async clearFilters() {
         }
     }
 
+/**
+ * @description Safely extracts phone number (PN) from WhatsApp JID.
+ * Works for both PN (normal) and LID (Linked Identity) users.
+ * ✅ FIXED: Removed onWhatsApp() call that causes LID errors
+ */
 async getPhoneNumberFromJid(jid) {
     if (!jid || jid.includes('broadcast')) return jid.split('@')[0] || jid;
+
+    // Skip newsletter JIDs entirely
+    if (jid.includes('@newsletter')) {
+        logger.debug(`⏭️ Skipping newsletter JID: ${jid}`);
+        return null; // Return null so it's skipped in updateTopicNames
+    }
 
     // 1️⃣ Try from contact store - check phoneNumber field first
     const contact = this.whatsappBot.store?.contacts?.[jid];
@@ -313,30 +324,20 @@ async getPhoneNumberFromJid(jid) {
         }
     }
 
-    // 5️⃣ Try fetching contact info directly from WhatsApp (last resort)
-    try {
-        const [contactInfo] = await this.whatsappBot.sock.onWhatsApp(jid);
-        if (contactInfo?.jid) {
-            const phone = contactInfo.jid.split('@')[0];
-            if (/^\d{10,15}$/.test(phone)) {
-                logger.debug(`✅ Resolved ${jid} → ${phone} (from onWhatsApp)`);
-                return phone;
-            }
-        }
-    } catch (error) {
-        logger.debug(`⚠️ onWhatsApp lookup failed for ${jid}:`, error.message);
+    // 5️⃣ Direct extraction from JID (if it's @s.whatsapp.net format)
+    const jidPhone = jid.split('@')[0];
+    if (/^\d{10,15}$/.test(jidPhone)) {
+        logger.debug(`✅ Resolved ${jid} → ${jidPhone} (from JID directly)`);
+        return jidPhone;
     }
 
-    // 6️⃣ Last resort fallback - but log warning
-    const fallbackPhone = jid.split('@')[0];
-    
-    // If it looks like a LID (too long or non-numeric), warn loudly
-    if (fallbackPhone.length > 15 || !/^\d+$/.test(fallbackPhone)) {
-        logger.warn(`⚠️ ⚠️ ⚠️ Could not resolve phone number for ${jid}, using fallback: ${fallbackPhone}`);
-        logger.warn(`This may cause topic creation issues. Consider re-syncing contacts.`);
+    // 6️⃣ Last resort fallback - but log warning for invalid formats
+    if (jidPhone.length > 15 || !/^\d+$/.test(jidPhone)) {
+        logger.warn(`⚠️ Could not resolve valid phone number for ${jid}, skipping`);
+        return null; // Return null instead of invalid phone
     }
     
-    return fallbackPhone;
+    return jidPhone;
 }
 async syncContacts() {
     try {
@@ -459,6 +460,7 @@ async updateTopicNames() {
         logger.info('🔄 Updating Telegram topic names...');
         let updatedCount = 0;
         let failedCount = 0;
+        let skippedCount = 0;
         
         for (const [jid, topicId] of this.chatMappings.entries()) {
             // Skip special topics and groups
@@ -470,17 +472,24 @@ async updateTopicNames() {
                 // ✅ AWAIT the phone number retrieval with enhanced resolution
                 const phone = await this.getPhoneNumberFromJid(jid);
                 
+                // Skip if phone is null (newsletter, invalid, etc.)
+                if (!phone) {
+                    logger.debug(`⏭️ Skipping ${jid} - could not resolve phone number`);
+                    skippedCount++;
+                    continue;
+                }
+                
                 // Validate phone number
-                if (!phone || phone.length > 15 || !/^\d{10,15}$/.test(phone)) {
-                    logger.warn(`⚠️ Invalid phone number for ${jid}: ${phone}, skipping topic update`);
-                    failedCount++;
+                if (phone.length > 15 || !/^\d{10,15}$/.test(phone)) {
+                    logger.debug(`⚠️ Invalid phone format for ${jid}: ${phone}, skipping`);
+                    skippedCount++;
                     continue;
                 }
                 
                 const contactName = this.contactMappings.get(phone);
                 
                 if (contactName) {
-                    logger.debug(`🔄 Attempting to update topic ${topicId} for ${phone} to "${contactName}"`);
+                    logger.debug(`🔄 Updating topic ${topicId} for ${phone} to "${contactName}"`);
                     
                     await this.telegramBot.editForumTopic(chatId, topicId, {
                         name: contactName
@@ -492,7 +501,8 @@ async updateTopicNames() {
                     // Add delay to avoid rate limits
                     await new Promise(resolve => setTimeout(resolve, 300));
                 } else {
-                    logger.debug(`🔄 ℹ️ No contact name found for ${phone} (JID: ${jid}), keeping current topic name`);
+                    logger.debug(`🔄 ℹ️ No contact name found for ${phone} (JID: ${jid})`);
+                    skippedCount++;
                 }
             } catch (error) {
                 logger.error(`❌ Failed to update topic ${topicId} for ${jid}:`, error.message);
@@ -500,7 +510,7 @@ async updateTopicNames() {
             }
         }
         
-        logger.info(`✅ Topic update complete - Updated: ${updatedCount}, Failed: ${failedCount}, Total: ${this.chatMappings.size}`);
+        logger.info(`✅ Topic update complete - Updated: ${updatedCount}, Skipped: ${skippedCount}, Failed: ${failedCount}, Total: ${this.chatMappings.size}`);
     } catch (error) {
         logger.error('❌ Failed to update topic names:', error);
     }
