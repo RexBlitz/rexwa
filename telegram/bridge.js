@@ -8,16 +8,15 @@ import path from 'path';
 import axios from 'axios';
 import sharp from 'sharp';
 import mime from 'mime-types';
-import { 
-    downloadContentFromMessage, 
-    delay, 
-    WAMessageContent, 
-    WAGroupMetadata 
-} from '@whiskeysockets/baileys';
+import { downloadContentFromMessage } from '@whiskeysockets/baileys';
 import ffmpeg from 'fluent-ffmpeg';
 import { Sticker, StickerTypes } from 'wa-sticker-formatter';
 import { exec } from 'child_process';
 import qrcode from 'qrcode';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 
 class TelegramBridge {
