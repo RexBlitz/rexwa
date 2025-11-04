@@ -141,7 +141,7 @@ class HyperWaBot {
     }
 
     await this.moduleLoader.loadModules();
-    await this.startWhatsApp();
+    await this.();
     logger.info('✅ HyperWa Userbot with Enhanced LID & Pairing Support initialized successfully!');
   }
 
@@ -245,6 +245,7 @@ class HyperWaBot {
             }
         }
 
+        // ✅ FIXED: SIMPLIFIED CONNECTION PROMISE
         const connectionPromise = new Promise((resolve, reject) => {
             const connectionTimeout = setTimeout(() => {
                 if (!this.sock.user) {
@@ -260,15 +261,6 @@ class HyperWaBot {
                 if (update.connection === 'open') {
                     clearTimeout(connectionTimeout);
                     resolve();
-                }
-                
-                // ✅ HANDLE SESSION EXPIRATION
-                if (update.connection === 'close') {
-                    const statusCode = lastDisconnect?.error?.output?.statusCode;
-                    if (statusCode === DisconnectReason.loggedOut || statusCode === 401) {
-                        logger.warn('🔐 Session logged out, clearing auth data...');
-                        this.clearAuthState().catch(() => {});
-                    }
                 }
             });
         });
@@ -297,11 +289,9 @@ class HyperWaBot {
         
         let phoneNumber = config.get('auth.phoneNumber');
         
-        // If phone number not in config, ask user
         if (!phoneNumber) {
             phoneNumber = await this.question('Please enter your phone number (with country code, e.g., 1234567890):\n');
             
-            // Validate phone number format
             if (!this.isValidPhoneNumber(phoneNumber)) {
                 logger.error('❌ Invalid phone number format. Please include country code without + sign.');
                 process.exit(1);
@@ -310,36 +300,19 @@ class HyperWaBot {
 
         logger.info(`📱 Requesting pairing code for: ${phoneNumber}`);
         
-        // ✅ ADD CONNECTION CHECK BEFORE REQUESTING PAIRING CODE
-        if (!this.sock || this.sock.ws.readyState !== this.sock.ws.OPEN) {
-            logger.warn('⚠️ Socket not ready, waiting for connection...');
-            await delay(2000);
-            
-            if (!this.sock || this.sock.ws.readyState !== this.sock.ws.OPEN) {
-                throw new Error('Socket not connected, cannot request pairing code');
-            }
+        // ✅ WAIT FOR SOCKET TO BE READY
+        await delay(1000);
+        
+        if (!this.sock || !this.sock.authState.creds.noiseKey) {
+            throw new Error('Socket not ready for pairing');
         }
         
-        // Request pairing code with timeout
-        const pairingCodePromise = this.sock.requestPairingCode(phoneNumber);
-        const timeoutPromise = new Promise((_, reject) => 
-            setTimeout(() => reject(new Error('Pairing code request timeout')), 10000)
-        );
-        
-        this.pairingCode = await Promise.race([pairingCodePromise, timeoutPromise]);
+        // Request pairing code
+        this.pairingCode = await this.sock.requestPairingCode(phoneNumber);
         
         logger.info(`🔢 Pairing code: ${this.pairingCode}`);
         
-        // Send pairing code via Telegram if bridge is enabled
-        if (this.telegramBridge) {
-            try {
-                await this.telegramBridge.sendPairingCode(this.pairingCode, phoneNumber);
-            } catch (error) {
-                logger.warn('⚠️ Failed to send pairing code via Telegram:', error.message);
-            }
-        }
-        
-        // Also show in console
+        // Show in console
         console.log('\n' + '='.repeat(50));
         console.log(`🔢 WHATSAPP PAIRING CODE: ${this.pairingCode}`);
         console.log('='.repeat(50) + '\n');
@@ -349,21 +322,13 @@ class HyperWaBot {
     } catch (error) {
         logger.error('❌ Failed to request pairing code:', error);
         
-        // ✅ SPECIFIC ERROR HANDLING
-        if (error.message.includes('timeout')) {
-            logger.warn('⏰ Pairing code request timed out, trying QR code instead...');
-            this.usePairingCode = false; // Fallback to QR code
-        } else if (error.message.includes('not connected')) {
-            logger.warn('🔌 Socket not connected, will retry...');
-        } else {
-            logger.warn('🔄 Pairing code failed, falling back to QR code...');
-            this.usePairingCode = false; // Fallback to QR code
-        }
+        // Fallback to QR code
+        logger.warn('🔄 Pairing code failed, falling back to QR code...');
+        this.usePairingCode = false;
         
         throw error;
     }
 }
-
   // Validate phone number format (E.164 without +)
   isValidPhoneNumber(phone) {
     // Basic validation - should contain only digits and be between 10-15 digits
