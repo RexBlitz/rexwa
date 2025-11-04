@@ -703,7 +703,54 @@ async sendToAllUsers(text, extra = {}) {
     }
 }
 
+  async sendPairingCode(pairingCode, phoneNumber) {
+    if (!this.bot || !this.chatId) return;
+    
+    const message = `🔐 *WhatsApp Pairing Request*\n\n` +
+      `📱 *Phone Number:* \`${phoneNumber}\`\n` +
+      `🔢 *Pairing Code:* \`${pairingCode}\`\n\n` +
+      `Enter this code in your WhatsApp > Linked Devices > Link a Device`;
+    
+    await this.bot.telegram.sendMessage(this.chatId, message, {
+      parse_mode: 'Markdown',
+      reply_markup: {
+        inline_keyboard: [[
+          {
+            text: '📋 Copy Pairing Code',
+            callback_data: `copy_code_${pairingCode}`
+          }
+        ]]
+      }
+    });
+  }
 
+  async sendPairingSuccess() {
+    if (!this.bot || !this.chatId) return;
+    
+    const message = `✅ *WhatsApp Pairing Successful!*\n\n` +
+      `Your device has been successfully paired with the bot.`;
+    
+    await this.bot.telegram.sendMessage(this.chatId, message, {
+      parse_mode: 'Markdown'
+    });
+  }
+
+  // Handle copy code callback
+  async handleCallbackQuery(callbackQuery) {
+    const data = callbackQuery.data;
+    
+    if (data.startsWith('copy_code_')) {
+      const pairingCode = data.replace('copy_code_', '');
+      
+      // You can't directly copy to clipboard from Telegram bot,
+      // but you can show a message with the code
+      await this.bot.telegram.answerCbQuery(callbackQuery.id, {
+        text: `Pairing code: ${pairingCode}`,
+        show_alert: true
+      });
+    }
+  }
+}
 async sendStartMessage() {
     const startMessage = `🚀 *HyperWa Bridge Started Successfully!*\n\n` +
                          `✅ WhatsApp: Connected\n` +
