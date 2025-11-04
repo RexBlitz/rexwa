@@ -52,7 +52,7 @@ class HyperWaBot {
             this.onDemandMap.clear();
         }
     }, 300000); // 5 minutes
-}
+
 
         // Store event listeners for advanced features
         this.setupStoreEventListeners();
