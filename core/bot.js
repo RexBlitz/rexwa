@@ -142,7 +142,6 @@ class HyperWaBot {
 
     await this.moduleLoader.loadModules();
     await this.startWhatsApp();
-
     logger.info('✅ HyperWa Userbot with Enhanced LID & Pairing Support initialized successfully!');
   }
 
@@ -169,184 +168,146 @@ class HyperWaBot {
 
     // Clean up existing socket
     if (this.sock) {
-        logger.info('🧹 Cleaning up existing WhatsApp socket');
-        this.sock.ev.removeAllListeners();
-        await this.sock.end();
-        this.sock = null;
+      logger.info('🧹 Cleaning up existing WhatsApp socket');
+      this.sock.ev.removeAllListeners();
+      await this.sock.end();
+      this.sock = null;
     }
 
     // Auth state initialization
     if (this.useMongoAuth) {
-        logger.info('🔧 Using MongoDB auth state...');
-        try {
-            ({ state, saveCreds } = await useMongoAuthState());
-            
-            // ✅ CHECK IF SESSION IS VALID
-            if (state.creds.registered === false || !state.creds.me) {
-                logger.warn('🔄 Session is invalid/expired, clearing auth data...');
-                await this.clearAuthState();
-                // Get fresh auth state after clearing
-                ({ state, saveCreds } = await useMongoAuthState());
-            }
-            
-        } catch (error) {
-            logger.error('❌ Failed to initialize MongoDB auth state:', error);
-            logger.info('🔄 Falling back to file-based auth...');
-            ({ state, saveCreds } = await useMultiFileAuthState(this.authPath));
-        }
-    } else {
-        logger.info('🔧 Using file-based auth state...');
+      logger.info('🔧 Using MongoDB auth state...');
+      try {
+        ({ state, saveCreds } = await useMongoAuthState());
+      } catch (error) {
+        logger.error('❌ Failed to initialize MongoDB auth state:', error);
+        logger.info('🔄 Falling back to file-based auth...');
         ({ state, saveCreds } = await useMultiFileAuthState(this.authPath));
+      }
+    } else {
+      logger.info('🔧 Using file-based auth state...');
+      ({ state, saveCreds } = await useMultiFileAuthState(this.authPath));
     }
 
     const { version, isLatest } = await fetchLatestBaileysVersion();
     logger.info(`📱 Using WA v${version.join('.')}, isLatest: ${isLatest}`);
 
     try {
-        // Enhanced socket configuration with LID support
-        this.sock = makeWASocket({
-            auth: {
-                creds: state.creds,
-                keys: makeCacheableSignalKeyStore(state.keys, logger.child({ module: 'keys' })),
-            },
-            version,
-            logger: logger.child({ module: 'baileys' }),
-            msgRetryCounterCache: this.msgRetryCounterCache,
-            generateHighQualityLinkPreview: true,
-            getMessage: this.getMessage.bind(this),
-            
-            // Enhanced browser configuration
-            browser: config.get('bot.browser') || Browsers.macOS('Chrome'),
-            
-            // Critical performance options
-            markOnlineOnConnect: config.get('bot.markOnlineOnConnect', false),
-            syncFullHistory: config.get('bot.syncFullHistory', false),
-            shouldSyncHistoryMessage: config.get('bot.shouldSyncHistory', () => true),
-            fireInitQueries: config.get('bot.fireInitQueries', true),
-            retryRequestDelayMs: config.get('bot.retryDelay', 1000),
-            
-            // Group metadata caching to avoid rate limits
-            cachedGroupMetadata: this.getCachedGroupMetadata.bind(this),
-            
-            // Security
-            firewall: config.get('bot.firewall', true),
-            printQRInTerminal: config.get('bot.printQRInTerminal', false)
+      // Enhanced socket configuration with LID support
+      this.sock = makeWASocket({
+        auth: {
+          creds: state.creds,
+          keys: makeCacheableSignalKeyStore(state.keys, logger.child({ module: 'keys' })),
+        },
+        version,
+        logger: logger.child({ module: 'baileys' }),
+        msgRetryCounterCache: this.msgRetryCounterCache,
+        generateHighQualityLinkPreview: true,
+        getMessage: this.getMessage.bind(this),
+        
+        // Enhanced browser configuration
+        browser: config.get('bot.browser') || Browsers.macOS('Chrome'),
+        
+        // Critical performance options
+        markOnlineOnConnect: config.get('bot.markOnlineOnConnect', false),
+        syncFullHistory: config.get('bot.syncFullHistory', false),
+        shouldSyncHistoryMessage: config.get('bot.shouldSyncHistory', () => true),
+        fireInitQueries: config.get('bot.fireInitQueries', true),
+        retryRequestDelayMs: config.get('bot.retryDelay', 1000),
+        
+        // Group metadata caching to avoid rate limits
+        cachedGroupMetadata: this.getCachedGroupMetadata.bind(this),
+        
+        // Security
+        firewall: config.get('bot.firewall', true),
+        printQRInTerminal: config.get('bot.printQRInTerminal', false)
+      });
+
+      // Bind store to socket events
+      this.store.bind(this.sock.ev);
+      logger.info('🔗 Store bound to socket');
+
+      // Handle pairing code if enabled and not registered
+      if (this.usePairingCode && !state.creds.registered) {
+        await this.handlePairingCode();
+      }
+
+      const connectionPromise = new Promise((resolve, reject) => {
+        const connectionTimeout = setTimeout(() => {
+          if (!this.sock.user) {
+            logger.warn('❌ Connection timed out after 30 seconds');
+            this.sock.ev.removeAllListeners();
+            this.sock.end();
+            this.sock = null;
+            reject(new Error('Connection timed out'));
+          }
+        }, 30000);
+
+        this.sock.ev.on('connection.update', update => {
+          if (update.connection === 'open') {
+            clearTimeout(connectionTimeout);
+            resolve();
+          }
         });
+      });
 
-        // Bind store to socket events
-        this.store.bind(this.sock.ev);
-        logger.info('🔗 Store bound to socket');
-
-        // ✅ IMPROVED PAIRING CODE LOGIC
-if (this.usePairingCode) {
-    if (!state.creds.registered) {
-        const pairingResult = await this.handlePairingCode();
-        if (pairingResult === null) {
-            // Pairing failed but we're continuing with QR code
-            logger.info('🔄 Continuing with QR code authentication...');
-        }
-    } else {
-        logger.info('✅ Using existing registered session');
-    }
-}
-        // ✅ FIXED: SIMPLIFIED CONNECTION PROMISE
-        const connectionPromise = new Promise((resolve, reject) => {
-            const connectionTimeout = setTimeout(() => {
-                if (!this.sock.user) {
-                    logger.warn('❌ Connection timed out after 30 seconds');
-                    this.sock.ev.removeAllListeners();
-                    this.sock.end();
-                    this.sock = null;
-                    reject(new Error('Connection timed out'));
-                }
-            }, 30000);
-
-            this.sock.ev.on('connection.update', update => {
-                if (update.connection === 'open') {
-                    clearTimeout(connectionTimeout);
-                    resolve();
-                }
-            });
-        });
-
-        this.setupEnhancedEventHandlers(saveCreds);
-        await connectionPromise;
+      this.setupEnhancedEventHandlers(saveCreds);
+      await connectionPromise;
 
     } catch (error) {
-        logger.error('❌ Failed to initialize WhatsApp socket:', error);
-        
-        // ✅ CLEAR AUTH ON CRITICAL ERRORS
-        if (error.message?.includes('logged out') || error.message?.includes('401')) {
-            logger.warn('🔄 Session expired, clearing auth data...');
-            await this.clearAuthState();
-        }
-        
-        logger.info('🔄 Retrying with new QR code...');
-        setTimeout(() => this.startWhatsApp(), 5000);
+      logger.error('❌ Failed to initialize WhatsApp socket:', error);
+      logger.info('🔄 Retrying with new QR code...');
+      setTimeout(() => this.startWhatsApp(), 5000);
     }
-}
+  }
 
   // Handle pairing code authentication
   async handlePairingCode() {
     try {
-        logger.info('🔐 Pairing code authentication requested');
+      logger.info('🔐 Pairing code authentication requested');
+      
+      let phoneNumber = config.get('auth.phoneNumber');
+      
+      // If phone number not in config, ask user
+      if (!phoneNumber) {
+        phoneNumber = await this.question('Please enter your phone number (with country code, e.g., 1234567890):\n');
         
-        let phoneNumber = config.get('auth.phoneNumber');
-        
-        if (!phoneNumber) {
-            phoneNumber = await this.question('Please enter your phone number (with country code, e.g., 1234567890):\n');
-            
-            if (!this.isValidPhoneNumber(phoneNumber)) {
-                logger.error('❌ Invalid phone number format. Please include country code without + sign.');
-                process.exit(1);
-            }
+        // Validate phone number format
+        if (!this.isValidPhoneNumber(phoneNumber)) {
+          logger.error('❌ Invalid phone number format. Please include country code without + sign.');
+          process.exit(1);
         }
+      }
 
-        logger.info(`📱 Requesting pairing code for: ${phoneNumber}`);
-        
-        // ✅ BETTER WAIT FOR SOCKET READINESS
-        let attempts = 0;
-        while (attempts < 10) {
-            if (this.sock && this.sock.authState?.creds?.noiseKey) {
-                break;
-            }
-            await delay(500);
-            attempts++;
+      logger.info(`📱 Requesting pairing code for: ${phoneNumber}`);
+      
+      // Request pairing code
+      this.pairingCode = await this.sock.requestPairingCode(phoneNumber);
+      
+      logger.info(`🔢 Pairing code: ${this.pairingCode}`);
+      
+      // Send pairing code via Telegram if bridge is enabled
+      if (this.telegramBridge) {
+        try {
+          await this.telegramBridge.sendPairingCode(this.pairingCode, phoneNumber);
+        } catch (error) {
+          logger.warn('⚠️ Failed to send pairing code via Telegram:', error.message);
         }
-        
-        if (!this.sock || !this.sock.authState?.creds?.noiseKey) {
-            logger.warn('⚠️ Socket not fully ready, but attempting pairing code anyway...');
-        }
-        
-        // Request pairing code with better error handling
-        this.pairingCode = await this.sock.requestPairingCode(phoneNumber);
-        
-        logger.info(`🔢 Pairing code: ${this.pairingCode}`);
-        
-        // Show in console
-        console.log('\n' + '='.repeat(50));
-        console.log(`🔢 WHATSAPP PAIRING CODE: ${this.pairingCode}`);
-        console.log('='.repeat(50) + '\n');
-        console.log('📱 Go to WhatsApp → Linked Devices → Link a Device');
-        console.log('💡 Enter the pairing code above');
-        console.log('⏳ The bot will automatically reconnect once paired...\n');
-        
-        logger.info('⏳ Waiting for pairing confirmation...');
-        
-        // ✅ DON'T THROW ERROR - LET THE CONNECTION HANDLE THE FLOW
-        return this.pairingCode;
-        
+      }
+      
+      // Also show in console
+      console.log('\n' + '='.repeat(50));
+      console.log(`🔢 WHATSAPP PAIRING CODE: ${this.pairingCode}`);
+      console.log('='.repeat(50) + '\n');
+      
+      logger.info('⏳ Waiting for pairing confirmation...');
+      
     } catch (error) {
-        logger.error('❌ Failed to request pairing code:', error.message);
-        
-        // Fallback to QR code but don't crash
-        logger.warn('🔄 Pairing code failed, falling back to QR code...');
-        this.usePairingCode = false;
-        
-        // Return null instead of throwing to prevent socket initialization failure
-        return null;
+      logger.error('❌ Failed to request pairing code:', error);
+      throw error;
     }
-}
+  }
+
   // Validate phone number format (E.164 without +)
   isValidPhoneNumber(phone) {
     // Basic validation - should contain only digits and be between 10-15 digits
@@ -602,15 +563,8 @@ if (this.usePairingCode) {
     this.sock.ev.process(async (events) => {
       try {
         if (events['connection.update']) {
-          const update = events['connection.update'];
-          logger.debug(`🔌 Connection update: ${update.connection}`, {
-            qr: !!update.qr,
-            isNewLogin: !!update.isNewLogin,
-            receivedCredentials: !!update.receivedCredentials
-          });
-          await this.handleConnectionUpdate(update);
+          await this.handleConnectionUpdate(events['connection.update']);
         }
-        
         
         if (events['creds.update']) {
           await saveCreds();
@@ -693,93 +647,64 @@ if (this.usePairingCode) {
     });
   }
 
- async handleConnectionUpdate(update) {
+  async handleConnectionUpdate(update) {
     const { connection, lastDisconnect, qr, isNewLogin } = update;
     
     if (qr && !this.usePairingCode) {
-        logger.info('📱 WhatsApp QR code generated');
-        qrcode.generate(qr, { small: true });
-        
-        if (this.telegramBridge) {
-            try {
-                await this.telegramBridge.sendQRCode(qr);
-            } catch (error) {
-                logger.warn('⚠️ TelegramBridge failed to send QR:', error.message);
-            }
+      logger.info('📱 WhatsApp QR code generated');
+      qrcode.generate(qr, { small: true });
+      
+      if (this.telegramBridge) {
+        try {
+          await this.telegramBridge.sendQRCode(qr);
+        } catch (error) {
+          logger.warn('⚠️ TelegramBridge failed to send QR:', error.message);
         }
+      }
     }
     
     if (isNewLogin) {
-        logger.info('🎉 New login detected!');
+      logger.info('🎉 New login detected!');
     }
     
     if (connection === 'close') {
-        const statusCode = lastDisconnect?.error?.output?.statusCode || 0;
-        
-        // ✅ IMPROVED LOGIC FOR PAIRING CODE MODE
-        if (this.usePairingCode && !this.sock?.user) {
-            // In pairing mode, connection failures are normal - just reconnect
-            logger.warn('🔄 Pairing mode: Connection closed, reconnecting...');
-            this.store.saveToFile();
-            setTimeout(() => this.startWhatsApp(), 5000);
-            return;
-        }
-        
-        const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-        
-        // ✅ AUTO-CLEAR EXPIRED SESSIONS (only for actual logout)
-        if (statusCode === DisconnectReason.loggedOut || statusCode === 401) {
-            logger.warn('🔐 Session logged out, clearing auth data...');
-            await this.clearAuthState();
-        }
-        
-        if (shouldReconnect && !this.isShuttingDown) {
-            logger.warn('🔄 Connection closed, reconnecting...');
-            this.store.saveToFile();
-            setTimeout(() => this.startWhatsApp(), 5000);
-        } else {
-            logger.error('❌ Connection closed permanently. Please restart the bot.');
-            await this.clearAuthState();
-            this.store.saveToFile();
-            process.exit(1);
-        }
+      const statusCode = lastDisconnect?.error?.output?.statusCode || 0;
+      const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+      
+      if (shouldReconnect && !this.isShuttingDown) {
+        logger.warn('🔄 Connection closed, reconnecting...');
+        this.store.saveToFile();
+        setTimeout(() => this.startWhatsApp(), 5000);
+      } else {
+        logger.error('❌ Connection closed permanently. Please restart the bot.');
+        await this.clearAuthState();
+        this.store.saveToFile();
+        process.exit(1);
+      }
     } else if (connection === 'open') {
-        await this.onConnectionOpen();
-    } else if (connection === 'connecting') {
-        logger.debug('🔄 Connecting to WhatsApp...');
+      await this.onConnectionOpen();
     }
-}
-  
- async clearAuthState() {
-    logger.info('🗑️ Clearing auth state...');
-    
+  }
+
+  async clearAuthState() {
     if (this.useMongoAuth) {
-        try {
-            const db = await connectDb();
-            const coll = db.collection("auth");
-            await coll.deleteOne({ _id: "session" });
-            logger.info('🗑️ MongoDB auth session cleared');
-        } catch (error) {
-            logger.error('❌ Failed to clear MongoDB auth session:', error);
-        }
+      try {
+        const db = await connectDb();
+        const coll = db.collection("auth");
+        await coll.deleteOne({ _id: "session" });
+        logger.info('🗑️ MongoDB auth session cleared');
+      } catch (error) {
+        logger.error('❌ Failed to clear MongoDB auth session:', error);
+      }
     } else {
-        try {
-            await fs.remove(this.authPath);
-            logger.info('🗑️ File-based auth session cleared');
-        } catch (error) {
-            logger.error('❌ Failed to clear file-based auth session:', error);
-        }
+      try {
+        await fs.remove(this.authPath);
+        logger.info('🗑️ File-based auth session cleared');
+      } catch (error) {
+        logger.error('❌ Failed to clear file-based auth session:', error);
+      }
     }
-    
-    // Also clear store to avoid using old data
-    try {
-        this.store.clear();
-        await fs.remove('./whatsapp-store.json').catch(() => {});
-        logger.info('🗑️ Store data cleared');
-    } catch (error) {
-        logger.debug('Could not clear store data:', error.message);
-    }
-}
+  }
 
   async handleMessagesUpsert(upsert) {
     if (upsert.type === 'notify') {
