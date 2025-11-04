@@ -171,11 +171,8 @@ class HyperWaBot {
         logger: logger.child({ module: 'baileys' }),
         msgRetryCounterCache: this.msgRetryCounterCache,
         generateHighQualityLinkPreview: true,
-        getMessage: this.getMessage.bind(this), // ✅ Bind properly
+        getMessage: this.getMessage.bind(this), 
         browser: ['HyperWa', 'Chrome', '3.0'],
-        syncFullHistory: false,
-        markOnlineOnConnect: false,
-        firewall: false,
         printQRInTerminal: false
     });
 
