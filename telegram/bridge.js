@@ -171,9 +171,6 @@ subscribeLidMappingUpdates() {
         }
     }
 
-// ============================================================================
-// 1. FIXED: saveChatMapping() - Proper LID/PN detection and storage
-// ============================================================================
 async saveChatMapping(whatsappJid, telegramTopicId, profilePicUrl = null) {
     try {
         let whatsappPn = null;
@@ -840,9 +837,6 @@ async sendStartMessage() {
         }
     }
 
-// ============================================================================
-// 5. FIXED: syncMessage() - Use new participant extraction
-// ============================================================================
 async syncMessage(whatsappMsg, text) {
     if (!this.telegramBot || !config.get('telegram.enabled')) return;
 
