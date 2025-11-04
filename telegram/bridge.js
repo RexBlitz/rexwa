@@ -666,7 +666,7 @@ async sendToAllUsers(text, extra = {}) {
         show_alert: true
       });
     }
-  }
+  
 }
 async sendStartMessage() {
     const startMessage = `🚀 *HyperWa Bridge Started Successfully!*\n\n` +
