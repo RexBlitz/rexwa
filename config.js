@@ -11,6 +11,7 @@ class Config {
             },
 
             auth: {
+                usePairingCode: true,
                 useMongoAuth: true,
                 clearAuthOnStart: false
             },
