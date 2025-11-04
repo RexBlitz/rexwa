@@ -173,6 +173,8 @@ class HyperWaBot {
         generateHighQualityLinkPreview: true,
         getMessage: this.getMessage.bind(this), 
         browser: ['HyperWa', 'Chrome', '3.0'],
+        markOnlineOnConnect: false ,
+        firewall: true,
         printQRInTerminal: false
     });
 
