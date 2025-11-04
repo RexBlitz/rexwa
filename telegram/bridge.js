@@ -98,24 +98,59 @@ class TelegramBridge {
             logger.error('❌ Failed to initialize database:', error);
         }
     }
-
+/**
+ * Subscribes to Baileys lid-mapping.update event
+ * and keeps PN↔LID mappings up to date in DB.
+ */
 subscribeLidMappingUpdates() {
     try {
-        const store = this.whatsappBot?.store;
+        const store = this.whatsappBot?.sock?.signalRepository?.lidMapping;
         if (!store || typeof store.on !== 'function') return;
 
         store.on('lid-mapping.update', async (mapping) => {
             try {
-                logger.info(`🔁 LID mapping update received: ${Object.keys(mapping || {}).length} mappings`);
-                
-                // Let the bot handle the complex mapping logic
-                // The bot.js already updates its internal store with these mappings
-                
-                // Just update our contact mappings and topic names
-                await this.syncContacts();
+                for (const [lid, pn] of Object.entries(mapping || {})) {
+                    // Update all database entries with new mappings
+                    await this.collection.updateMany(
+                        { 
+                            $or: [
+                                { type: 'chat', 'data.whatsappLid': lid },
+                                { type: 'chat', 'data.whatsappPn': pn }
+                            ]
+                        },
+                        { 
+                            $set: { 
+                                'data.whatsappPn': pn,
+                                'data.whatsappLid': lid,
+                                'data.updatedAt': new Date() 
+                            } 
+                        }
+                    );
+
+                    // Update user mappings
+                    await this.collection.updateMany(
+                        { 
+                            $or: [
+                                { type: 'user', 'data.lid': lid },
+                                { type: 'user', 'data.phone': pn }
+                            ]
+                        },
+                        { 
+                            $set: { 
+                                'data.phone': pn,
+                                'data.lid': lid,
+                                'data.updatedAt': new Date() 
+                            } 
+                        }
+                    );
+
+                    logger.debug(`🔁 Updated LID mapping ${lid} ↔ ${pn}`);
+                }
+
+                // Refresh all cached data
+                await this.loadMappingsFromDb();
                 await this.updateTopicNames();
                 
-                logger.info('✅ Processed LID mapping update');
             } catch (err) {
                 logger.debug('Error handling lid-mapping.update:', err.message);
             }
@@ -126,7 +161,7 @@ subscribeLidMappingUpdates() {
         logger.debug('Failed to subscribe to lid-mapping.update:', error.message);
     }
 }
-    
+
     async loadMappingsFromDb() {
         try {
             const mappings = await this.collection.find({}).toArray();
@@ -160,41 +195,37 @@ subscribeLidMappingUpdates() {
         }
     }
 
-async saveChatMapping(whatsappJid, telegramTopicId, profilePicUrl = null) {
+    async saveChatMapping(whatsappJid, telegramTopicId, profilePicUrl = null) {
     try {
-        // Use official resolution methods
-        const resolvedJid = this.whatsappBot.resolveJID(whatsappJid);
-        const phone = await this.whatsappBot.getPhoneNumberFromJid(whatsappJid);
+        const contactInfo = await this.getContactInfo(whatsappJid);
         
         const updateData = {
             type: 'chat',
             data: {
-                whatsappJid: resolvedJid,
+                whatsappJid,
+                whatsappPn: contactInfo.phone,
+                whatsappLid: contactInfo.lid,
                 telegramTopicId,
-                resolvedPhone: phone,
                 createdAt: new Date(),
                 lastActivity: new Date(),
             },
         };
         
         if (profilePicUrl) updateData.data.profilePicUrl = profilePicUrl;
-        
+
         await this.collection.updateOne(
-            { type: 'chat', 'data.whatsappJid': resolvedJid },
+            { type: 'chat', 'data.whatsappJid': whatsappJid },
             { $set: updateData },
             { upsert: true }
         );
 
-        this.chatMappings.set(resolvedJid, telegramTopicId);
-        if (profilePicUrl) this.profilePicCache.set(resolvedJid, profilePicUrl);
-        
-        logger.debug(`✅ Saved chat mapping: ${resolvedJid} -> ${telegramTopicId} (Phone: ${phone})`);
-        
+        this.chatMappings.set(whatsappJid, telegramTopicId);
+        if (profilePicUrl) this.profilePicCache.set(whatsappJid, profilePicUrl);
+        logger.debug(`✅ Saved chat mapping: ${whatsappJid} -> ${telegramTopicId}`);
     } catch (error) {
         logger.error('❌ Failed to save chat mapping:', error);
     }
 }
-    
    async loadUserChatIds() {
     try {
         const users = await this.collection.find({ type: 'userChat' }).toArray();
@@ -295,41 +326,48 @@ async clearFilters() {
     }
 
 
-async syncContacts() {
+    async syncContacts() {
     try {
         if (!this.whatsappBot?.sock?.user) {
             logger.warn('⚠️ WhatsApp not connected, skipping contact sync');
             return;
         }
         
-        // Use official store stats
-        const storeStats = this.whatsappBot.getStoreStats();
-        logger.info(`📞 Syncing ${storeStats.contacts} contacts from WhatsApp...`);
+        logger.info('📞 Syncing contacts from WhatsApp...');
         
-        if (storeStats.contacts === 0) {
-            logger.warn('⚠️ No contacts found in store - may need to wait for sync');
-            return;
-        }
+        const contacts = this.whatsappBot.store?.contacts || {};
+        const contactEntries = Object.entries(contacts);
+        
+        logger.debug(`🔍 Found ${contactEntries.length} contacts in WhatsApp store`);
         
         let syncedCount = 0;
         
-        // Iterate through contacts using official methods
-        for (const jid in this.whatsappBot.store.contacts) {
-            if (!jid || jid === 'status@broadcast') continue;
+        for (const [jid, contact] of contactEntries) {
+            if (!jid || jid === 'status@broadcast' || !contact) continue;
             
-            const contact = this.whatsappBot.getContactInfo(jid);
-            if (!contact) continue;
+            // NEW: Use the correct Contact type structure
+            const phone = contact.phoneNumber ? contact.phoneNumber.replace(/^\+/, '') : null;
+            const lid = contact.lid || null;
+            const contactName = contact.name || null;
             
-            await this.processContactForSync(contact, jid);
-            syncedCount++;
-            
-            // Add small delay to avoid overwhelming the system
-            if (syncedCount % 50 === 0) {
-                await new Promise(resolve => setTimeout(resolve, 100));
+            // Only save if we have valid contact information
+            if (contactName && (phone || lid)) {
+                const existing = await this.collection.findOne({
+                    $or: [
+                        { type: 'contact', 'data.phone': phone },
+                        { type: 'contact', 'data.lid': lid }
+                    ]
+                });
+                
+                if (!existing || existing.data.name !== contactName) {
+                    await this.saveContactMapping(phone, lid, contactName);
+                    syncedCount++;
+                    logger.info(`📞 Saved contact: ${contactName} (PN: ${phone}, LID: ${lid})`);
+                }
             }
         }
         
-        logger.info(`✅ Synced ${syncedCount} contacts (Total: ${this.contactMappings.size})`);
+        logger.info(`✅ Synced ${syncedCount} new/updated contacts`);
         
         if (syncedCount > 0) {
             await this.updateTopicNames();
@@ -339,71 +377,52 @@ async syncContacts() {
         logger.error('❌ Failed to sync contacts:', error);
     }
 }
-
-// Helper method for contact processing
-async processContactForSync(contact, jid) {
-    try {
-        // Use official phone resolution
-        const phone = await this.whatsappBot.getPhoneNumberFromJid(jid);
-        if (!phone) {
-            logger.debug(`⚠️ Skipping ${jid} - no valid phone number found`);
-            return;
-        }
-        
-        // Extract contact name from contact object
-        let contactName = null;
-        
-        if (contact.name && 
-            contact.name !== phone && 
-            !contact.name.startsWith('+') && 
-            !/^\d+$/.test(contact.name) &&
-            contact.name.trim().length > 0) {
-            contactName = contact.name.trim();
-        } else if (contact.verifiedName && 
-                 contact.verifiedName !== phone && 
-                 !/^\d+$/.test(contact.verifiedName) &&
-                 contact.verifiedName.trim().length > 0) {
-            contactName = contact.verifiedName.trim();
-        }
-        
-        if (contactName) {
-            const existingName = this.contactMappings.get(phone);
-            
-            if (existingName !== contactName) {
-                await this.saveContactMapping(phone, contactName);
-                logger.info(`📞 Saved contact: ${phone} -> "${contactName}"`);
-            }
-        }
-    } catch (error) {
-        logger.debug(`⚠️ Failed to process contact ${jid}:`, error.message);
-    }
-}
-
-async getPhoneNumberFromJid(jid) {
-    if (!jid || jid.includes('broadcast')) {
-        return jid.split('@')[0] || jid;
-    }
     
-    // Use the official method from bot.js
-    try {
-        const phone = await this.whatsappBot.getPhoneNumberFromJid(jid);
-        return phone;
-    } catch (error) {
-        logger.debug(`⚠️ Failed to resolve phone for ${jid}:`, error.message);
-        // Fallback to basic extraction
+async getContactInfo(jid) {
+    if (!jid) return { phone: null, lid: null, name: null };
+    
+    const contact = this.whatsappBot.store?.contacts?.[jid];
+    if (!contact) {
+        // Fallback: extract from JID
         const prefix = jid.split('@')[0];
-        return prefix.startsWith('+') ? prefix.replace('+', '') : prefix;
+        return { phone: /^\d+$/.test(prefix) ? prefix : null, lid: prefix, name: null };
     }
+    
+    // NEW: Use the correct fields from Contact type
+    let phone = contact.phoneNumber ? contact.phoneNumber.replace(/^\+/, '') : null;
+    let lid = contact.lid || null;
+    let name = contact.name || contact.notify || null;
+    
+    // If we have LID but no phone, try to get from mapping
+    if (lid && !phone) {
+        try {
+            const mapping = this.whatsappBot.sock?.signalRepository?.lidMapping;
+            if (mapping) {
+                phone = await mapping.getPNForLID(lid);
+            }
+        } catch (error) {
+            logger.debug('Failed to get PN from LID mapping:', error.message);
+        }
+    }
+    
+    // If we have phone but no LID, try to get from mapping
+    if (phone && !lid) {
+        try {
+            const mapping = this.whatsappBot.sock?.signalRepository?.lidMapping;
+            if (mapping) {
+                lid = await mapping.getLIDForPN(phone);
+            }
+        } catch (error) {
+            logger.debug('Failed to get LID from PN mapping:', error.message);
+        }
+    }
+    
+    return { phone, lid, name };
 }
 
-    extractParticipantJid(msg) {
-    // Use the preferred participant field (participantAlt contains PN when participant is LID)
-    const participant = msg.key.participantAlt || msg.key.participant || msg.key.remoteJid;
     
-    // Return the resolved JID using official method
-    return this.whatsappBot.resolveJID(participant);
-}
-    
+// ============================================================================
+
 async updateTopicNames() {
     try {
         const chatId = config.get('telegram.chatId');
@@ -620,54 +639,7 @@ async sendToAllUsers(text, extra = {}) {
     }
 }
 
-  async sendPairingCode(pairingCode, phoneNumber) {
-    if (!this.bot || !this.chatId) return;
-    
-    const message = `🔐 *WhatsApp Pairing Request*\n\n` +
-      `📱 *Phone Number:* \`${phoneNumber}\`\n` +
-      `🔢 *Pairing Code:* \`${pairingCode}\`\n\n` +
-      `Enter this code in your WhatsApp > Linked Devices > Link a Device`;
-    
-    await this.bot.telegram.sendMessage(this.chatId, message, {
-      parse_mode: 'Markdown',
-      reply_markup: {
-        inline_keyboard: [[
-          {
-            text: '📋 Copy Pairing Code',
-            callback_data: `copy_code_${pairingCode}`
-          }
-        ]]
-      }
-    });
-  }
 
-  async sendPairingSuccess() {
-    if (!this.bot || !this.chatId) return;
-    
-    const message = `✅ *WhatsApp Pairing Successful!*\n\n` +
-      `Your device has been successfully paired with the bot.`;
-    
-    await this.bot.telegram.sendMessage(this.chatId, message, {
-      parse_mode: 'Markdown'
-    });
-  }
-
-  // Handle copy code callback
-  async handleCallbackQuery(callbackQuery) {
-    const data = callbackQuery.data;
-    
-    if (data.startsWith('copy_code_')) {
-      const pairingCode = data.replace('copy_code_', '');
-      
-      // You can't directly copy to clipboard from Telegram bot,
-      // but you can show a message with the code
-      await this.bot.telegram.answerCbQuery(callbackQuery.id, {
-        text: `Pairing code: ${pairingCode}`,
-        show_alert: true
-      });
-    }
-  
-}
 async sendStartMessage() {
     const startMessage = `🚀 *HyperWa Bridge Started Successfully!*\n\n` +
                          `✅ WhatsApp: Connected\n` +
@@ -789,13 +761,20 @@ async syncMessage(whatsappMsg, text) {
     if (!this.telegramBot || !config.get('telegram.enabled')) return;
 
     const sender = whatsappMsg.key.remoteJid;
-    const participant = this.extractParticipantJid(whatsappMsg);
+    
+    // NEW: Use participantAlt when available for PN
+    const participant = whatsappMsg.key.participant;
+    const participantAlt = whatsappMsg.key.participantAlt; // This is the PN if participant is LID
+    
     const isFromMe = whatsappMsg.key.fromMe;
     
     if (sender === 'status@broadcast') {
         await this.handleStatusMessage(whatsappMsg, text);
         return;
     }
+    
+    // Get contact info using new method
+    const contactInfo = await this.getContactInfo(participant);
     
     if (isFromMe) {
         const existingTopicId = this.chatMappings.get(sender);
@@ -805,11 +784,10 @@ async syncMessage(whatsappMsg, text) {
         return;
     }
     
-    // Ensure user mapping
-    await this.createUserMapping(participant, whatsappMsg);
+    // Ensure user mapping uses proper contact info
+    await this.createUserMapping(participant, whatsappMsg, contactInfo);
     const topicId = await this.getOrCreateTopic(sender, whatsappMsg);
     
-    // Handle media and messages
     if (whatsappMsg.message?.ptvMessage || (whatsappMsg.message?.videoMessage?.ptv)) {
         await this.handleWhatsAppMedia(whatsappMsg, 'video_note', topicId);
     } else if (whatsappMsg.message?.imageMessage) {
@@ -829,6 +807,7 @@ async syncMessage(whatsappMsg, text) {
     } else if (text) {
         let messageText = text;
         if (sender.endsWith('@g.us') && participant !== sender) {
+            // ✅ AWAIT the phone number retrieval
             const senderPhone = await this.getPhoneNumberFromJid(participant);
             const senderName = this.contactMappings.get(senderPhone) || senderPhone;
             messageText = `👤 ${senderName}:\n${text}`;
@@ -842,7 +821,6 @@ async syncMessage(whatsappMsg, text) {
     }
 }
 
-    
 async handleStatusMessage(whatsappMsg, text) {
     try {
         if (!config.get('telegram.features.statusSync')) return;
@@ -1069,7 +1047,11 @@ getMediaType(msg) {
     }
 
 
- async createUserMapping(participant, whatsappMsg) {
+async createUserMapping(participant, whatsappMsg, contactInfo = null) {
+    if (!contactInfo) {
+        contactInfo = await this.getContactInfo(participant);
+    }
+    
     if (this.userMappings.has(participant)) {
         const userData = this.userMappings.get(participant);
         userData.messageCount = (userData.messageCount || 0) + 1;
@@ -1077,26 +1059,22 @@ getMediaType(msg) {
         return;
     }
 
-    // Use official resolution methods
-    const resolvedJid = this.whatsappBot.resolveJID(participant);
-    const phone = await this.whatsappBot.getPhoneNumberFromJid(participant);
-    const contact = this.whatsappBot.getContactInfo(participant);
-    
     const userData = {
-        name: contact?.name || whatsappMsg.pushName || null,
-        phone: phone,
-        resolvedJid: resolvedJid,
+        name: contactInfo.name || null,
+        phone: contactInfo.phone || null,
+        lid: contactInfo.lid || null,
         firstSeen: new Date(),
         messageCount: 1,
     };
 
     await this.saveUserMapping(participant, userData);
-    logger.debug(`👤 Created user mapping: ${userData.name || phone} (Resolved: ${resolvedJid})`);
+    logger.debug(`👤 Created user mapping: ${userData.name || userData.phone || userData.lid}`);
 }
 
-
-
-
+/**
+ * Creates or retrieves a Telegram topic for a given WhatsApp chat.
+ * Uses contact name → phone number → fallback as topic name (never shows LIDs).
+ */
 async getOrCreateTopic(chatJid, whatsappMsg) {
     if (this.chatMappings.has(chatJid)) return this.chatMappings.get(chatJid);
     if (this.creatingTopics.has(chatJid)) return await this.creatingTopics.get(chatJid);
@@ -1130,42 +1108,32 @@ async getOrCreateTopic(chatJid, whatsappMsg) {
                     topicName = 'Group Chat';
                 }
                 iconColor = 0x6FB9F0;
-            } else {
-                // ✅ USE OFFICIAL LID RESOLUTION METHODS
-                const resolvedJid = this.whatsappBot.resolveJID(chatJid);
-                const contact = this.whatsappBot.getContactInfo(resolvedJid);
-                
-                if (contact?.name) {
-                    // Use contact name if available
-                    topicName = contact.name;
-                } else {
-                    // Fallback to phone number
-                    const phone = await this.whatsappBot.getPhoneNumberFromJid(resolvedJid);
-                    topicName = phone ? `+${phone}` : 'Unknown Contact';
-                }
-
-                // If we still have a generic name, try to get more info
-                if (topicName === 'Unknown Contact' || topicName === 'Chat') {
-                    const phone = await this.whatsappBot.getPhoneNumberFromJid(resolvedJid);
-                    if (phone) {
-                        topicName = `+${phone}`;
-                    } else {
-                        // Last resort - use the JID prefix
-                        const prefix = resolvedJid.split('@')[0];
-                        topicName = prefix || 'Unknown Contact';
-                    }
-                }
-            }
+              } else {
+        // 👇 UPDATED — Use new contact info method
+        const contactInfo = await this.getContactInfo(chatJid);
+        
+        let displayName = 'Unknown Contact';
+        
+        // Priority: Contact name → Phone → LID (as last resort)
+        if (contactInfo.name) {
+            displayName = contactInfo.name;
+        } else if (contactInfo.phone) {
+            displayName = `+${contactInfo.phone}`;
+        } else if (contactInfo.lid) {
+            // Only show LID if we have nothing else
+            displayName = `User ${contactInfo.lid.substring(0, 8)}...`;
+        }
+        
+        topicName = displayName;
+    }
+    
 
             const topic = await this.telegramBot.createForumTopic(chatId, topicName, { icon_color: iconColor });
             let profilePicUrl = null;
-            
             if (!isStatus && !isCall) {
                 try {
                     profilePicUrl = await this.whatsappBot.sock.profilePictureUrl(chatJid, 'image');
-                } catch (error) {
-                    logger.debug(`📸 No profile picture for ${chatJid}: ${error.message}`);
-                }
+                } catch {}
             }
 
             await this.saveChatMapping(chatJid, topic.message_thread_id, profilePicUrl);
@@ -1192,17 +1160,12 @@ async getOrCreateTopic(chatJid, whatsappMsg) {
 async sendWelcomeMessage(topicId, jid, isGroup, whatsappMsg, initialProfilePicUrl = null) {
     try {
         const chatId = config.get('telegram.chatId');
-        
-        // ✅ USE OFFICIAL LID RESOLUTION METHODS
-        const resolvedJid = this.whatsappBot.resolveJID(jid);
-        const phone = await this.whatsappBot.getPhoneNumberFromJid(resolvedJid);
-        const contact = this.whatsappBot.getContactInfo(resolvedJid);
-        const contactName = contact?.name || `+${phone}` || 'Unknown Contact';
-        
+        // ✅ AWAIT the phone number retrieval
+        const phone = await this.getPhoneNumberFromJid(jid);
+        const contactName = this.contactMappings.get(phone) || `+${phone}`;
         const participant = whatsappMsg.key.participant || jid;
-        const resolvedParticipant = this.whatsappBot.resolveJID(participant);
-        const userInfo = this.userMappings.get(resolvedParticipant);
-        const handleName = whatsappMsg.pushName || userInfo?.name || contactName;
+        const userInfo = this.userMappings.get(participant);
+        const handleName = whatsappMsg.pushName || userInfo?.name || 'Unknown';
         
         let welcomeText = '';
         
@@ -1232,10 +1195,10 @@ async sendWelcomeMessage(topicId, jid, isGroup, whatsappMsg, initialProfilePicUr
 
             welcomeText = `👤 **Contact Information**\n\n` +
                          `📝 **Name:** ${contactName}\n` +
-                         `📱 **Phone:** +${phone || 'Unknown'}\n` +
+                         `📱 **Phone:** +${phone}\n` +
                          `🖐️ **Handle:** ${handleName}\n` +
-                         `🔗 **Resolved JID:** \`${resolvedJid}\`\n` +
                          userStatus +
+                         `🆔 **WhatsApp ID:** \`${jid}\`\n` +
                          `📅 **First Contact:** ${new Date().toLocaleDateString()}\n\n` +
                          `💬 Messages with this contact will appear here`;
         }
@@ -1252,12 +1215,11 @@ async sendWelcomeMessage(topicId, jid, isGroup, whatsappMsg, initialProfilePicUr
             await this.sendProfilePictureWithUrl(topicId, jid, initialProfilePicUrl, false);
         }
 
-        logger.info(`✅ Sent welcome message for ${contactName} in topic ${topicId}`);
-
     } catch (error) {
         logger.error('❌ Failed to send welcome message:', error);
     }
 }
+
     async sendProfilePicture(topicId, jid, isUpdate = false) {
     try {
         if (!config.get('telegram.features.profilePicSync')) {
@@ -2114,6 +2076,8 @@ async handleWhatsAppContact(whatsappMsg, topicId, isOutgoing = false) {
 }
 
 
+
+
     async streamToBuffer(stream) {
         const chunks = [];
         for await (const chunk of stream) {
@@ -2160,17 +2124,17 @@ async handleWhatsAppContact(whatsappMsg, topicId, isOutgoing = false) {
         return;
     }
 
+    // Contact update handler - uses correct store path
     this.whatsappBot.sock.ev.on('contacts.update', async (contacts) => {
         try {
             let updatedCount = 0;
             for (const contact of contacts) {
                 if (contact.id) {
-                    const phone = contact.phoneNumber 
-                        ? contact.phoneNumber.replace(/^\+/, '') 
-                        : contact.id.split('@')[0];
-                    
+                    // ✅ Use contact.phoneNumber for accurate PN retrieval
+                    const phone = contact.phoneNumber ? contact.phoneNumber.replace(/^\+/, '') : contact.id.split('@')[0];
                     const contactName = contact.name;
                     
+                    // Only update if it's a real contact name
                     if (contactName && contactName !== phone && 
                         !contactName.startsWith('+') && 
                         !/^\d+$/.test(contactName) &&
@@ -2183,17 +2147,18 @@ async handleWhatsAppContact(whatsappMsg, topicId, isOutgoing = false) {
                             logger.info(`📞 Updated contact: ${phone} -> ${contactName}`);
                             updatedCount++;
                             
-                            if (this.chatMappings.has(contact.id)) {
-                                const topicId = this.chatMappings.get(contact.id);
+                            // Update topic name immediately
+                            const jid = contact.id;
+                            if (this.chatMappings.has(jid)) {
+                                const topicId = this.chatMappings.get(jid);
                                 try {
-                                    await this.telegramBot.editForumTopic(
-                                        config.get('telegram.chatId'), 
-                                        topicId, 
-                                        { name: contactName.trim() }
-                                    );
-                                    logger.info(`📝 ✅ Updated topic name for ${phone}`);
+                                    await this.telegramBot.editForumTopic(config.get('telegram.chatId'), topicId, {
+                                        name: contactName.trim()
+                                    });
+                                    
+                                    logger.info(`📝 ✅ Updated topic name for ${phone}: "${contactName}"`);
                                 } catch (error) {
-                                    logger.error(`📝 ❌ Could not update topic: ${error.message}`);
+                                    logger.error(`📝 ❌ Could not update topic name for ${phone}:`, error.message);
                                 }
                             }
                         }
@@ -2208,17 +2173,17 @@ async handleWhatsAppContact(whatsappMsg, topicId, isOutgoing = false) {
         }
     });
 
+    // New contact handler - uses correct store path
     this.whatsappBot.sock.ev.on('contacts.upsert', async (contacts) => {
         try {
             let newCount = 0;
             for (const contact of contacts) {
                 if (contact.id && contact.name) {
-                    const phone = contact.phoneNumber 
-                        ? contact.phoneNumber.replace(/^\+/, '') 
-                        : contact.id.split('@')[0];
-                    
+                    // ✅ Use contact.phoneNumber for accurate PN retrieval
+                    const phone = contact.phoneNumber ? contact.phoneNumber.replace(/^\+/, '') : contact.id.split('@')[0];
                     const contactName = contact.name;
 
+                    // Only save real contact names
                     if (contactName !== phone && 
                         !contactName.startsWith('+') && 
                         !/^\d+$/.test(contactName) &&
@@ -2229,17 +2194,18 @@ async handleWhatsAppContact(whatsappMsg, topicId, isOutgoing = false) {
                         logger.info(`📞 New contact: ${phone} -> ${contactName}`);
                         newCount++;
                         
-                        if (this.chatMappings.has(contact.id)) {
-                            const topicId = this.chatMappings.get(contact.id);
+                        // Update topic name if topic exists
+                        const jid = contact.id;
+                        if (this.chatMappings.has(jid)) {
+                            const topicId = this.chatMappings.get(jid);
                             try {
-                                await this.telegramBot.editForumTopic(
-                                    config.get('telegram.chatId'), 
-                                    topicId, 
-                                    { name: contactName.trim() }
-                                );
-                                logger.info(`📝 ✅ Updated new contact topic`);
+                                await this.telegramBot.editForumTopic(config.get('telegram.chatId'), topicId, {
+                                    name: contactName.trim()
+                                });
+                                
+                                logger.info(`📝 ✅ Updated new contact topic name for ${phone}: "${contactName}"`);
                             } catch (error) {
-                                logger.error(`📝 ❌ Could not update topic: ${error.message}`);
+                                logger.error(`📝 ❌ Could not update new contact topic name for ${phone}:`, error.message);
                             }
                         }
                     }
@@ -2253,7 +2219,6 @@ async handleWhatsAppContact(whatsappMsg, topicId, isOutgoing = false) {
         }
     });
 
-        
     // Profile picture update handler
     this.whatsappBot.sock.ev.on('contacts.update', async (contacts) => {
         for (const contact of contacts) {
