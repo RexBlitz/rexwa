@@ -2080,56 +2080,59 @@ async handleWhatsAppContact(whatsappMsg, topicId, isOutgoing = false) {
         }
     }
 
-   async sendSimpleMessage(topicId, text, sender) {
+    async sendSimpleMessage(topicId, text, sender) {
     const chatId = config.get('telegram.chatId');
-    let currentTopicId = topicId;
-    let maxRetries = 1; // Allows 1 initial attempt + 1 retry after recreation
 
-    for (let attempt = 0; attempt <= maxRetries; attempt++) {
-        try {
-            // Attempt to send message with currentTopicId (or new ID on retry)
-            const sentMessage = await this.telegramBot.sendMessage(chatId, text, {
-                message_thread_id: currentTopicId
-            });
-            return sentMessage.message_id; // ✅ Success: Exit loop and return message ID
+    try {
+        const sentMessage = await this.telegramBot.sendMessage(chatId, text, {
+            message_thread_id: topicId
+        });
+        return sentMessage.message_id;
 
-        } catch (error) {
-            const desc = error.response?.data?.description || error.message;
+    } catch (error) {
+        const desc = error.response?.data?.description || error.message;
 
-            // ⚠️ Check for "topic not found" error and if we have retries left
-            if (desc.includes('message thread not found') && attempt < maxRetries) {
-                logger.warn(`🗑️ Topic ID ${currentTopicId} for sender ${sender} is missing. Recreating on attempt ${attempt + 1}...`);
+        if (desc.includes('message thread not found')) {
+            logger.warn(`🗑️ Topic ID ${topicId} for sender ${sender} is missing. Recreating...`);
 
-                // Find JID from topic ID (based on the old topicId)
-                const jidEntry = [...this.chatMappings.entries()].find(([jid, tId]) => tId === currentTopicId);
-                const jid = jidEntry?.[0] || sender;
+            // Find JID from topic ID
+            const jidEntry = [...this.chatMappings.entries()].find(([jid, tId]) => tId === topicId);
+            const jid = jidEntry?.[0];
 
-                if (jid) {
-                    // 1. Clean mapping
-                    this.chatMappings.delete(jid);
-                    this.profilePicCache.delete(jid);
-                    await this.collection.deleteOne({ type: 'chat', 'data.whatsappJid': jid });
+            if (jid) {
+                // Clean mapping
+                this.chatMappings.delete(jid);
+                this.profilePicCache.delete(jid);
+                await this.collection.deleteOne({ type: 'chat', 'data.whatsappJid': jid });
 
-                    // 2. Recreate topic (this updates this.chatMappings internally)
-                    const dummyMsg = {
-                        key: {
-                            remoteJid: jid,
-                            participant: jid.endsWith('@g.us') ? jid : jid
-                        }
-                    };
-                    const newTopicId = await this.getOrCreateTopic(jid, dummyMsg);
+                // Recreate topic
+                const dummyMsg = {
+                    key: {
+                        remoteJid: jid,
+                        participant: jid.endsWith('@g.us') ? jid : jid
+                    }
+                };
+                const newTopicId = await this.getOrCreateTopic(jid, dummyMsg);
 
-                    if (newTopicId) {
-                        currentTopicId = newTopicId; // Set new ID for the next loop iteration (retry)
-                        continue; // Skip the rest and restart the loop
+                if (newTopicId) {
+                    // 🔁 RETRY original message
+                    try {
+                        const retryMessage = await this.telegramBot.sendMessage(chatId, text, {
+                            message_thread_id: newTopicId
+                        });
+                        return retryMessage.message_id;
+                    } catch (retryErr) {
+                        logger.error('❌ Retry failed after topic recreation:', retryErr);
+                        return null;
                     }
                 }
+            } else {
+                logger.warn(`⚠️ Could not find WhatsApp JID for topic ID ${topicId}`);
             }
-            
-            // ❌ If not a missing thread error, or max retries reached, or recreation failed
-            logger.error('❌ Failed to send message to Telegram:', desc);
-            return null;
         }
+
+        logger.error('❌ Failed to send message to Telegram:', desc);
+        return null;
     }
 }
 
