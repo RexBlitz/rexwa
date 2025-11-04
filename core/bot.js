@@ -238,14 +238,17 @@ class HyperWaBot {
         logger.info('🔗 Store bound to socket');
 
         // ✅ IMPROVED PAIRING CODE LOGIC
-        if (this.usePairingCode) {
-            if (!state.creds.registered) {
-                await this.handlePairingCode();
-            } else {
-                logger.info('✅ Using existing registered session');
-            }
+if (this.usePairingCode) {
+    if (!state.creds.registered) {
+        const pairingResult = await this.handlePairingCode();
+        if (pairingResult === null) {
+            // Pairing failed but we're continuing with QR code
+            logger.info('🔄 Continuing with QR code authentication...');
         }
-
+    } else {
+        logger.info('✅ Using existing registered session');
+    }
+}
         // ✅ FIXED: SIMPLIFIED CONNECTION PROMISE
         const connectionPromise = new Promise((resolve, reject) => {
             const connectionTimeout = setTimeout(() => {
@@ -301,14 +304,21 @@ class HyperWaBot {
 
         logger.info(`📱 Requesting pairing code for: ${phoneNumber}`);
         
-        // ✅ WAIT FOR SOCKET TO BE READY
-        await delay(1000);
-        
-        if (!this.sock || !this.sock.authState.creds.noiseKey) {
-            throw new Error('Socket not ready for pairing');
+        // ✅ BETTER WAIT FOR SOCKET READINESS
+        let attempts = 0;
+        while (attempts < 10) {
+            if (this.sock && this.sock.authState?.creds?.noiseKey) {
+                break;
+            }
+            await delay(500);
+            attempts++;
         }
         
-        // Request pairing code
+        if (!this.sock || !this.sock.authState?.creds?.noiseKey) {
+            logger.warn('⚠️ Socket not fully ready, but attempting pairing code anyway...');
+        }
+        
+        // Request pairing code with better error handling
         this.pairingCode = await this.sock.requestPairingCode(phoneNumber);
         
         logger.info(`🔢 Pairing code: ${this.pairingCode}`);
@@ -317,17 +327,24 @@ class HyperWaBot {
         console.log('\n' + '='.repeat(50));
         console.log(`🔢 WHATSAPP PAIRING CODE: ${this.pairingCode}`);
         console.log('='.repeat(50) + '\n');
+        console.log('📱 Go to WhatsApp → Linked Devices → Link a Device');
+        console.log('💡 Enter the pairing code above');
+        console.log('⏳ The bot will automatically reconnect once paired...\n');
         
         logger.info('⏳ Waiting for pairing confirmation...');
         
-    } catch (error) {
-        logger.error('❌ Failed to request pairing code:', error);
+        // ✅ DON'T THROW ERROR - LET THE CONNECTION HANDLE THE FLOW
+        return this.pairingCode;
         
-        // Fallback to QR code
+    } catch (error) {
+        logger.error('❌ Failed to request pairing code:', error.message);
+        
+        // Fallback to QR code but don't crash
         logger.warn('🔄 Pairing code failed, falling back to QR code...');
         this.usePairingCode = false;
         
-        throw error;
+        // Return null instead of throwing to prevent socket initialization failure
+        return null;
     }
 }
   // Validate phone number format (E.164 without +)
@@ -585,8 +602,15 @@ class HyperWaBot {
     this.sock.ev.process(async (events) => {
       try {
         if (events['connection.update']) {
-          await this.handleConnectionUpdate(events['connection.update']);
+          const update = events['connection.update'];
+          logger.debug(`🔌 Connection update: ${update.connection}`, {
+            qr: !!update.qr,
+            isNewLogin: !!update.isNewLogin,
+            receivedCredentials: !!update.receivedCredentials
+          });
+          await this.handleConnectionUpdate(update);
         }
+        
         
         if (events['creds.update']) {
           await saveCreds();
@@ -669,7 +693,7 @@ class HyperWaBot {
     });
   }
 
-  async handleConnectionUpdate(update) {
+ async handleConnectionUpdate(update) {
     const { connection, lastDisconnect, qr, isNewLogin } = update;
     
     if (qr && !this.usePairingCode) {
@@ -691,9 +715,19 @@ class HyperWaBot {
     
     if (connection === 'close') {
         const statusCode = lastDisconnect?.error?.output?.statusCode || 0;
+        
+        // ✅ IMPROVED LOGIC FOR PAIRING CODE MODE
+        if (this.usePairingCode && !this.sock?.user) {
+            // In pairing mode, connection failures are normal - just reconnect
+            logger.warn('🔄 Pairing mode: Connection closed, reconnecting...');
+            this.store.saveToFile();
+            setTimeout(() => this.startWhatsApp(), 5000);
+            return;
+        }
+        
         const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
         
-        // ✅ AUTO-CLEAR EXPIRED SESSIONS
+        // ✅ AUTO-CLEAR EXPIRED SESSIONS (only for actual logout)
         if (statusCode === DisconnectReason.loggedOut || statusCode === 401) {
             logger.warn('🔐 Session logged out, clearing auth data...');
             await this.clearAuthState();
@@ -711,6 +745,8 @@ class HyperWaBot {
         }
     } else if (connection === 'open') {
         await this.onConnectionOpen();
+    } else if (connection === 'connecting') {
+        logger.debug('🔄 Connecting to WhatsApp...');
     }
 }
   
