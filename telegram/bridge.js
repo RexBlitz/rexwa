@@ -426,62 +426,46 @@ async syncContacts() {
 
 async getPhoneNumberFromJid(jid) {
     if (!jid || jid.includes('broadcast')) {
+        // Handles status@broadcast or call@broadcast JIDs
         return jid.split('@')[0] || jid;
     }
     
-    // 1️⃣ Try from contact store (most reliable)
-    const contact = this.whatsappBot.store?.contacts?.[jid];
-    if (contact) {
-        // NEW: phoneNumber field is already clean (no @domain)
-        if (contact.phoneNumber) {
-            return contact.phoneNumber.replace(/^\+/, '');
-        }
-        
-        // Fallback: extract from contact ID
-        if (contact.id) {
-            const prefix = contact.id.split('@')[0];
-            if (/^\d+$/.test(prefix)) {
-                return prefix.replace(/^\+/, '');
-            }
-            // It's an LID, try to resolve it
-        }
-    }
-
-    // 2️⃣ Check if it's a group or special JID
     const prefix = jid.split('@')[0];
     const isGroupOrSpecial = jid.endsWith('@g.us') || jid.includes('broadcast');
     
     if (isGroupOrSpecial) {
+        // Group chats or broadcast messages use the prefix (which is typically numeric for groups)
         return prefix;
     }
 
-    // 3️⃣ Try LID mapping
+    // 1️⃣ Check the contact store first (most reliable PN/LID resolution)
+    const contact = this.whatsappBot.store?.contacts?.[jid];
+    if (contact?.phoneNumber) {
+        // If the contact object already contains a resolved PN, use it.
+        return contact.phoneNumber.replace(/^\+/, '');
+    }
+
+    // 2️⃣ Use Baileys built-in LID mapping resolution for ALL non-group prefixes
+    // This is the CRITICAL step to resolve numeric LIDs that look like PNs.
     const lidMapping = this.whatsappBot.sock?.signalRepository?.lidMapping;
     if (lidMapping) {
         try {
-            const isPhoneNumber = /^\d+$/.test(prefix);
-            
-            if (isPhoneNumber) {
-                // It's already a PN, return it
-                return prefix;
-            } else {
-                // It's an LID, try to get PN
-                const pn = await lidMapping.getPNForLID(prefix);
-                if (pn) {
-                    logger.debug(`🔍 Resolved LID ${prefix} -> PN ${pn}`);
-                    return pn;
-                }
+            // We use Baileys' resolver to get the PN for the JID prefix.
+            // This function is designed to work even if the prefix IS the PN.
+            const pn = await lidMapping.getPNForLID(prefix);
+            if (pn) {
+                logger.debug(`🔍 Resolved JID prefix ${prefix} -> PN ${pn}`);
+                return pn;
             }
         } catch (err) {
             logger.debug(`LID mapping lookup failed for ${jid}:`, err.message);
         }
     }
 
-    // 4️⃣ Fallback - return the prefix as-is
+    // 3️⃣ Final Fallback - return the prefix as-is
+    // This will return an unresolved LID (if Baileys failed) or a true PN.
     return prefix.startsWith('+') ? prefix.replace('+', '') : prefix;
 }
-
-
 /**
  * Extract participant JID with LID system support
  * Handles both participant and participantAlt fields
