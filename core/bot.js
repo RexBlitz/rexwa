@@ -565,44 +565,38 @@ class HyperWaBot {
       logger.info('🎉 New login detected!');
     }
     
-    if (connection === 'close') {
-      const statusCode = lastDisconnect?.error?.output?.statusCode || 0;
-      const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-      
-      if (shouldReconnect && !this.isShuttingDown) {
-        logger.warn('🔄 Connection closed, reconnecting...');
-        this.store.saveToFile();
-        setTimeout(() => this.startWhatsApp(), 5000);
-      } else {
-        logger.error('❌ Connection closed permanently. Please restart the bot.');
-        await this.clearAuthState();
-        this.store.saveToFile();
-        process.exit(1);
-      }
-    } else if (connection === 'open') {
-      await this.onConnectionOpen();
-    }
-  }
+        if (connection === 'close') {
+            const statusCode = lastDisconnect?.error?.output?.statusCode || 0;
+            const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
 
-  async clearAuthState() {
-    if (this.useMongoAuth) {
-      try {
-        const db = await connectDb();
-        const coll = db.collection("auth");
-        await coll.deleteOne({ _id: "session" });
-        logger.info('🗑️ MongoDB auth session cleared');
-      } catch (error) {
-        logger.error('❌ Failed to clear MongoDB auth session:', error);
-      }
-    } else {
-      try {
-        await fs.remove(this.authPath);
-        logger.info('🗑️ File-based auth session cleared');
-      } catch (error) {
-        logger.error('❌ Failed to clear file-based auth session:', error);
-      }
+            if (shouldReconnect && !this.isShuttingDown) {
+                logger.warn('🔄 Connection closed, reconnecting...');
+                // Save store before reconnecting
+                this.store.saveToFile();
+                setTimeout(() => this.startWhatsApp(), 5000);
+            } else {
+                logger.error('❌ Connection closed permanently. Please delete auth_info and restart.');
+
+                if (this.useMongoAuth) {
+                    try {
+                        const db = await connectDb();
+                        const coll = db.collection("auth");
+                        await coll.deleteOne({ _id: "session" });
+                        logger.info('🗑️ MongoDB auth session cleared');
+                    } catch (error) {
+                        logger.error('❌ Failed to clear MongoDB auth session:', error);
+                    }
+                }
+
+                // Final store save
+                this.store.saveToFile();
+                process.exit(1);
+            }
+        } else if (connection === 'open') {
+            await this.onConnectionOpen();
+        }
     }
-  }
+
 
   async handleMessagesUpsert(upsert) {
     if (upsert.type === 'notify') {
