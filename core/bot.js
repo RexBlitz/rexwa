@@ -14,6 +14,7 @@ import qrcode from 'qrcode-terminal';
 import fs from 'fs-extra';
 import path from 'path';
 import NodeCache from '@cacheable/node-cache';
+import readline from 'readline';
 import { makeInMemoryStore } from './store.js';
 import config from '../config.js';
 import logger from './logger.js';
@@ -36,7 +37,12 @@ class HyperWaBot {
     this.isFirstConnection = true;
     this.usePairingCode = config.get('auth.usePairingCode', false);
     this.pairingCode = null;
-    this.retryCount = 0;
+
+    // Create readline interface for pairing code input
+    this.rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout
+    });
 
     // Enhanced store with LID support
     this.store = makeInMemoryStore({
@@ -77,6 +83,7 @@ class HyperWaBot {
       logger.debug(`💬 Store: ${chats.length} chats cached`);
     });
 
+    // Enhanced LID mapping listener
     this.store.on('lid-mapping.update', (mapping) => {
       logger.debug(`🔑 LID Mapping Update: ${Object.keys(mapping).length} mappings`);
       this.handleLIDMappingUpdate(mapping);
@@ -113,40 +120,49 @@ class HyperWaBot {
     return { chats: chatCount, contacts: contactCount, messages: messageCount };
   }
 
-    async initialize() {
-        logger.info('🔧 Initializing HyperWa Userbot with Enhanced Store...');
+  // Helper method to ask questions via readline
+  question(text) {
+    return new Promise((resolve) => this.rl.question(text, resolve));
+  }
 
-        try {
-            this.db = await connectDb();
-            logger.info('✅ Database connected successfully!');
-        } catch (error) {
-            logger.error('❌ Failed to connect to database:', error);
-            process.exit(1);
-        }
-
-        if (config.get('telegram.enabled')) {
-            try {
-                const { default: TelegramBridge } = await import('../telegram/bridge.js');
-                this.telegramBridge = new TelegramBridge(this);
-                await this.telegramBridge.initialize();
-                logger.info('✅ Telegram bridge initialized');
-
-                try {
-                    await this.telegramBridge.sendStartMessage();
-                } catch (err) {
-                    logger.warn('⚠️ Failed to send start message via Telegram:', err.message);
-                }
-            } catch (error) {
-                logger.warn('⚠️ Telegram bridge failed to initialize:', error.message);
-                this.telegramBridge = null;
-            }
-        }
-
-        await this.moduleLoader.loadModules();
-        await this.startWhatsApp();
-
-        logger.info('✅ HyperWa Userbot with Enhanced Store initialized successfully!');
+  async initialize() {
+    logger.info('🔧 Initializing HyperWa Userbot with Enhanced LID & Pairing Support...');
+    
+    try {
+      this.db = await connectDb();
+      logger.info('✅ Database connected successfully!');
+    } catch (error) {
+      logger.error('❌ Failed to connect to database:', error);
+      process.exit(1);
     }
+
+    if (config.get('telegram.enabled')) {
+      await this.initializeTelegramBridge();
+    }
+
+    await this.moduleLoader.loadModules();
+    await this.startWhatsApp();
+    logger.info('✅ HyperWa Userbot with Enhanced LID & Pairing Support initialized successfully!');
+  }
+
+  async initializeTelegramBridge() {
+    try {
+      const { default: TelegramBridge } = await import('../telegram/bridge.js');
+      this.telegramBridge = new TelegramBridge(this);
+      await this.telegramBridge.initialize();
+      logger.info('✅ Telegram bridge initialized');
+      
+      try {
+        await this.telegramBridge.sendStartMessage();
+      } catch (err) {
+        logger.warn('⚠️ Failed to send start message via Telegram:', err.message);
+      }
+    } catch (error) {
+      logger.warn('⚠️ Telegram bridge failed to initialize:', error.message);
+      this.telegramBridge = null;
+    }
+  }
+
   async startWhatsApp() {
     let state, saveCreds;
 
@@ -163,13 +179,6 @@ class HyperWaBot {
       logger.info('🔧 Using MongoDB auth state...');
       try {
         ({ state, saveCreds } = await useMongoAuthState());
-        
-        // Check if session is valid
-        if (state.creds.registered === false || !state.creds.me) {
-          logger.warn('🔄 Session is invalid/expired, clearing auth data...');
-          await this.clearAuthState();
-          ({ state, saveCreds } = await useMongoAuthState());
-        }
       } catch (error) {
         logger.error('❌ Failed to initialize MongoDB auth state:', error);
         logger.info('🔄 Falling back to file-based auth...');
@@ -184,7 +193,7 @@ class HyperWaBot {
     logger.info(`📱 Using WA v${version.join('.')}, isLatest: ${isLatest}`);
 
     try {
-      // Socket configuration
+      // Enhanced socket configuration with LID support
       this.sock = makeWASocket({
         auth: {
           creds: state.creds,
@@ -195,33 +204,44 @@ class HyperWaBot {
         msgRetryCounterCache: this.msgRetryCounterCache,
         generateHighQualityLinkPreview: true,
         getMessage: this.getMessage.bind(this),
-        browser: Browsers.macOS('Chrome'),
-        markOnlineOnConnect: false,
-        syncFullHistory: false,
-        fireInitQueries: false,
-        retryRequestDelayMs: 2000,
+        
+        // Enhanced browser configuration
+        browser: config.get('bot.browser') || Browsers.macOS('Chrome'),
+        
+        // Critical performance options
+        markOnlineOnConnect: config.get('bot.markOnlineOnConnect', false),
+        syncFullHistory: config.get('bot.syncFullHistory', false),
+        shouldSyncHistoryMessage: config.get('bot.shouldSyncHistory', () => true),
+        fireInitQueries: config.get('bot.fireInitQueries', true),
+        retryRequestDelayMs: config.get('bot.retryDelay', 1000),
+        
+        // Group metadata caching to avoid rate limits
         cachedGroupMetadata: this.getCachedGroupMetadata.bind(this),
-        firewall: true,
-        printQRInTerminal: false
+        
+        // Security
+        firewall: config.get('bot.firewall', true),
+        printQRInTerminal: config.get('bot.printQRInTerminal', false)
       });
 
       // Bind store to socket events
       this.store.bind(this.sock.ev);
       logger.info('🔗 Store bound to socket');
 
-      // Handle pairing code if enabled
+      // Handle pairing code if enabled and not registered
       if (this.usePairingCode && !state.creds.registered) {
         await this.handlePairingCode();
       }
 
-      // Wait for connection
       const connectionPromise = new Promise((resolve, reject) => {
         const connectionTimeout = setTimeout(() => {
           if (!this.sock.user) {
-            logger.warn('❌ Connection timed out after 60 seconds');
+            logger.warn('❌ Connection timed out after 30 seconds');
+            this.sock.ev.removeAllListeners();
+            this.sock.end();
+            this.sock = null;
             reject(new Error('Connection timed out'));
           }
-        }, 60000);
+        }, 30000);
 
         this.sock.ev.on('connection.update', update => {
           if (update.connection === 'open') {
@@ -236,71 +256,75 @@ class HyperWaBot {
 
     } catch (error) {
       logger.error('❌ Failed to initialize WhatsApp socket:', error);
-      
-      // Clear auth on critical errors
-      if (error.message?.includes('logged out') || error.message?.includes('401')) {
-        logger.warn('🔄 Session expired, clearing auth data...');
-        await this.clearAuthState();
-      }
-      
-      // Exponential backoff
-      this.retryCount++;
-      const backoffDelay = Math.min(5000 * Math.pow(2, this.retryCount), 30000);
-      logger.info(`🔄 Retrying in ${backoffDelay/1000}s... (Attempt: ${this.retryCount})`);
-      setTimeout(() => this.startWhatsApp(), backoffDelay);
+      logger.info('🔄 Retrying with new QR code...');
+      setTimeout(() => this.startWhatsApp(), 5000);
     }
   }
 
+  // Handle pairing code authentication
   async handlePairingCode() {
     try {
-      const phoneNumber = config.get('auth.phoneNumber');
+      logger.info('🔐 Pairing code authentication requested');
+      
+      let phoneNumber = config.get('auth.phoneNumber');
+      
+      // If phone number not in config, ask user
       if (!phoneNumber) {
-        logger.error('❌ No phone number configured for pairing');
-        this.usePairingCode = false;
-        return;
+        phoneNumber = await this.question('Please enter your phone number (with country code, e.g., 1234567890):\n');
+        
+        // Validate phone number format
+        if (!this.isValidPhoneNumber(phoneNumber)) {
+          logger.error('❌ Invalid phone number format. Please include country code without + sign.');
+          process.exit(1);
+        }
       }
 
       logger.info(`📱 Requesting pairing code for: ${phoneNumber}`);
       
-      // Wait for socket to be ready
-      await delay(2000);
-      
+      // Request pairing code
       this.pairingCode = await this.sock.requestPairingCode(phoneNumber);
       
-      // Display pairing code clearly
+      logger.info(`🔢 Pairing code: ${this.pairingCode}`);
+      
+      // Send pairing code via Telegram if bridge is enabled
+      if (this.telegramBridge) {
+        try {
+          await this.telegramBridge.sendPairingCode(this.pairingCode, phoneNumber);
+        } catch (error) {
+          logger.warn('⚠️ Failed to send pairing code via Telegram:', error.message);
+        }
+      }
+      
+      // Also show in console
       console.log('\n' + '='.repeat(50));
-      console.log('🔢 WHATSAPP PAIRING CODE');
-      console.log('='.repeat(50));
-      console.log(`📱 Code: ${this.pairingCode}`);
-      console.log(`📞 Phone: ${phoneNumber}`);
-      console.log('='.repeat(50));
-      console.log('💡 Instructions:');
-      console.log('1. Open WhatsApp on your phone');
-      console.log('2. Go to Settings → Linked Devices → Link a Device');
-      console.log('3. Enter the code above');
-      console.log('⏳ Waiting for pairing...');
+      console.log(`🔢 WHATSAPP PAIRING CODE: ${this.pairingCode}`);
       console.log('='.repeat(50) + '\n');
       
-      logger.info(`🔢 Pairing code generated: ${this.pairingCode}`);
+      logger.info('⏳ Waiting for pairing confirmation...');
       
     } catch (error) {
-      logger.error('❌ Failed to request pairing code:', error.message);
-      logger.warn('🔄 Falling back to QR code...');
-      this.usePairingCode = false;
+      logger.error('❌ Failed to request pairing code:', error);
+      throw error;
     }
   }
 
+  // Validate phone number format (E.164 without +)
   isValidPhoneNumber(phone) {
+    // Basic validation - should contain only digits and be between 10-15 digits
     return /^\d{10,15}$/.test(phone);
   }
 
+  // Enhanced group metadata caching
   async getCachedGroupMetadata(jid) {
     try {
       let metadata = this.groupMetadataCache.get(jid);
+      
       if (!metadata) {
         metadata = await this.sock.groupMetadata(jid);
         this.groupMetadataCache.set(jid, metadata, 300);
+        logger.debug(`💾 Cached group metadata for: ${jid}`);
       }
+      
       return metadata;
     } catch (error) {
       logger.warn(`⚠️ Failed to get group metadata for ${jid}:`, error.message);
@@ -308,15 +332,21 @@ class HyperWaBot {
     }
   }
 
+  // Enhanced getMessage with better error handling
   async getMessage(key) {
     try {
-      if (!key?.remoteJid || !key?.id) return undefined;
+      if (!key?.remoteJid || !key?.id) {
+        return undefined;
+      }
 
       const effectiveJid = key.remoteJidAlt || key.remoteJid;
       const effectiveParticipant = key.participantAlt || key.participant;
 
       const storedMessage = this.store.loadMessage(effectiveJid, key.id);
-      if (storedMessage?.message) return storedMessage.message;
+      if (storedMessage?.message) {
+        logger.debug(`📨 Retrieved from store: ${key.id}`);
+        return storedMessage.message;
+      }
 
       if (effectiveParticipant && effectiveJid.endsWith('@g.us')) {
         const participantMessages = this.store.messages[effectiveJid];
@@ -337,100 +367,94 @@ class HyperWaBot {
     }
   }
 
+  // Enhanced LID-aware contact resolution
   getContactInfo(jid) {
-    if (!jid) return null;
-    
     let contact = this.store.contacts[jid];
     if (contact) return contact;
 
     if (this.sock?.signalRepository?.lidMapping) {
-      try {
-        const prefix = jid.split('@')[0];
-        if (isPnUser(jid)) {
-          const lid = this.sock.signalRepository.lidMapping.getLIDForPN(prefix);
-          if (lid) contact = this.store.contacts[`${lid}@s.whatsapp.net`];
-        } else {
-          const pn = this.sock.signalRepository.lidMapping.getPNForLID(prefix);
-          if (pn) contact = this.store.contacts[`${pn}@s.whatsapp.net`];
+      if (isPnUser(jid)) {
+        const lid = this.sock.signalRepository.lidMapping.getLIDForPN(jid);
+        if (lid) {
+          contact = this.store.contacts[lid];
         }
-      } catch (error) {
-        logger.debug('LID contact resolution failed:', error.message);
+      } else {
+        const pn = this.sock.signalRepository.lidMapping.getPNForLID(jid);
+        if (pn) {
+          contact = this.store.contacts[pn];
+        }
       }
     }
 
     return contact || null;
   }
 
+  // Enhanced JID resolution with LID support
   resolveJID(jid) {
     const contact = this.getContactInfo(jid);
     return contact?.id || jid;
   }
 
+  // Get preferred JID format (LID if available)
   getPreferredJID(jid) {
     if (!this.sock?.signalRepository?.lidMapping) return jid;
+    
     if (isPnUser(jid)) {
       const lid = this.sock.signalRepository.lidMapping.getLIDForPN(jid);
       return lid || jid;
     }
+    
     return jid;
   }
 
-  async getPhoneNumberFromJid(jid) {
-    if (!jid) return null;
-    const prefix = jid.split('@')[0];
-    const isGroupOrSpecial = jid.endsWith('@g.us') || jid.includes('broadcast');
+  // Enhanced message search with LID support
+  searchMessages(query, jid = null) {
+    const results = [];
+    const chatsToSearch = jid ? [jid] : Object.keys(this.store.messages);
     
-    if (isGroupOrSpecial) return prefix;
-
-    const contact = this.getContactInfo(jid);
-    if (contact?.phoneNumber) return contact.phoneNumber.replace(/^\+/, '');
-
-    if (this.sock?.signalRepository?.lidMapping) {
-      try {
-        if (/^\d+$/.test(prefix)) return prefix;
-        const pn = await this.sock.signalRepository.lidMapping.getPNForLID(prefix);
-        if (pn) return pn;
-      } catch (err) {
-        logger.debug('LID mapping lookup failed:', err.message);
+    for (const chatId of chatsToSearch) {
+      const messages = this.store.getMessages(chatId);
+      for (const msg of messages) {
+        const text = msg.message?.conversation || 
+                    msg.message?.extendedTextMessage?.text || 
+                    msg.message?.imageMessage?.caption || '';
+        
+        if (text.toLowerCase().includes(query.toLowerCase())) {
+          const senderJid = msg.key.fromMe ? 
+            'You' : 
+            this.resolveSenderInfo(msg.key.participantAlt || msg.key.participant);
+          
+          results.push({
+            chatId,
+            message: msg,
+            text,
+            sender: senderJid,
+            timestamp: msg.messageTimestamp
+          });
+        }
       }
     }
-
-    return prefix.startsWith('+') ? prefix.replace('+', '') : prefix;
+    
+    return results.slice(0, 100);
   }
 
-  async handleLIDMappingUpdate(mapping) {
-    try {
-      logger.info(`🔄 Processing ${Object.keys(mapping).length} LID mappings`);
-      for (const [pn, lid] of Object.entries(mapping)) {
-        logger.debug(`🔁 LID Mapping: ${pn} -> ${lid}`);
-      }
-      if (this.telegramBridge?.syncContacts) {
-        await this.telegramBridge.syncContacts();
-      }
-    } catch (error) {
-      logger.error('❌ Failed to handle LID mapping update:', error);
-    }
-  }
-
-  getContactName(jid) {
+  resolveSenderInfo(jid) {
+    if (!jid) return 'Unknown';
+    
     const contact = this.getContactInfo(jid);
     if (contact?.name) return contact.name;
     
     if (this.sock?.signalRepository?.lidMapping) {
-      try {
-        const phone = this.getPhoneNumberFromJid(jid);
-        if (phone) {
-          for (const [contactJid, contactInfo] of Object.entries(this.store.contacts)) {
-            if (contactInfo.phoneNumber === phone || contactInfo.phoneNumber === `+${phone}`) {
-              return contactInfo.name;
-            }
-          }
+      if (isPnUser(jid)) {
+        const lid = this.sock.signalRepository.lidMapping.getLIDForPN(jid);
+        if (lid) {
+          const lidContact = this.store.contacts[lid];
+          if (lidContact?.name) return lidContact.name;
         }
-      } catch (error) {
-        logger.debug('Contact name resolution failed:', error.message);
       }
     }
-    return null;
+    
+    return jid;
   }
 
   setupEnhancedEventHandlers(saveCreds) {
@@ -439,14 +463,81 @@ class HyperWaBot {
         if (events['connection.update']) {
           await this.handleConnectionUpdate(events['connection.update']);
         }
+        
         if (events['creds.update']) {
           await saveCreds();
+          logger.debug('💾 Credentials updated and saved');
         }
+        
         if (events['messages.upsert']) {
           await this.handleMessagesUpsert(events['messages.upsert']);
         }
+        
+        // Enhanced LID mapping handling
         if (events['lid-mapping.update']) {
+          logger.info('🔄 LID mapping update received');
           this.handleLIDMappingUpdate(events['lid-mapping.update']);
+        }
+        
+        // Handle pairing completion
+        if (events['connection.update'] && events['connection.update'].isNewLogin) {
+          logger.info('🎉 New login detected - pairing completed successfully!');
+          if (this.telegramBridge) {
+            try {
+              await this.telegramBridge.sendMessage('✅ Pairing completed successfully!');
+            } catch (error) {
+              logger.warn('⚠️ Failed to send pairing completion via Telegram:', error.message);
+            }
+          }
+        }
+        
+        // Handle other events...
+        if (!process.env.DOCKER) {
+          if (events['labels.association']) {
+            logger.info('📋 Label association update:', events['labels.association']);
+          }
+          if (events['labels.edit']) {
+            logger.info('📝 Label edit update:', events['labels.edit']);
+          }
+          if (events.call) {
+            logger.info('📞 Call event received');
+          }
+          if (events['messaging-history.set']) {
+            const { chats, contacts, messages, isLatest, progress, syncType } = events['messaging-history.set'];
+            if (syncType === proto.HistorySync.HistorySyncType.ON_DEMAND) {
+              logger.info('📥 Received on-demand history sync, messages:', messages.length);
+            }
+            logger.info(`📊 History sync: ${chats.length} chats, ${contacts.length} contacts, ${messages.length} msgs`);
+          }
+          if (events['messages.update']) {
+            for (const { key, update } of events['messages.update']) {
+              if (update.pollUpdates) {
+                logger.info('📊 Poll update received');
+              }
+            }
+          }
+          if (events['message-receipt.update']) {
+            logger.debug('📨 Message receipt update');
+          }
+          if (events['messages.reaction']) {
+            logger.info(`😀 Message reactions: ${events['messages.reaction'].length}`);
+          }
+          if (events['presence.update']) {
+            logger.debug('👤 Presence updates');
+          }
+          if (events['chats.update']) {
+            logger.debug('💬 Chats updated');
+          }
+          if (events['contacts.update']) {
+            for (const contact of events['contacts.update']) {
+              if (typeof contact.imgUrl !== 'undefined') {
+                logger.info(`👤 Contact ${contact.id} profile pic updated`);
+              }
+            }
+          }
+          if (events['chats.delete']) {
+            logger.info('🗑️ Chats deleted:', events['chats.delete']);
+          }
         }
       } catch (error) {
         logger.warn('⚠️ Event processing error:', error.message);
@@ -460,44 +551,40 @@ class HyperWaBot {
     if (qr && !this.usePairingCode) {
       logger.info('📱 WhatsApp QR code generated');
       qrcode.generate(qr, { small: true });
+      
+      if (this.telegramBridge) {
+        try {
+          await this.telegramBridge.sendQRCode(qr);
+        } catch (error) {
+          logger.warn('⚠️ TelegramBridge failed to send QR:', error.message);
+        }
+      }
     }
     
     if (isNewLogin) {
       logger.info('🎉 New login detected!');
-      this.retryCount = 0; // Reset retry counter on successful login
     }
     
     if (connection === 'close') {
       const statusCode = lastDisconnect?.error?.output?.statusCode || 0;
-      
-      // In pairing mode, connection failures are normal
-      if (this.usePairingCode && !this.sock?.user) {
-        logger.debug('🔄 Pairing mode: Connection closed, will reconnect...');
-        return;
-      }
-      
       const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-      
-      if (statusCode === DisconnectReason.loggedOut || statusCode === 401) {
-        logger.warn('🔐 Session logged out, clearing auth data...');
-        await this.clearAuthState();
-      }
       
       if (shouldReconnect && !this.isShuttingDown) {
         logger.warn('🔄 Connection closed, reconnecting...');
-        setTimeout(() => this.startWhatsApp(), 2000);
+        this.store.saveToFile();
+        setTimeout(() => this.startWhatsApp(), 5000);
       } else {
-        logger.error('❌ Connection closed permanently.');
+        logger.error('❌ Connection closed permanently. Please restart the bot.');
+        await this.clearAuthState();
+        this.store.saveToFile();
         process.exit(1);
       }
     } else if (connection === 'open') {
       await this.onConnectionOpen();
     }
   }
-  
+
   async clearAuthState() {
-    logger.info('🗑️ Clearing auth state...');
-    
     if (this.useMongoAuth) {
       try {
         const db = await connectDb();
@@ -514,14 +601,6 @@ class HyperWaBot {
       } catch (error) {
         logger.error('❌ Failed to clear file-based auth session:', error);
       }
-    }
-    
-    try {
-      this.store.clear();
-      await fs.remove('./whatsapp-store.json').catch(() => {});
-      logger.info('🗑️ Store data cleared');
-    } catch (error) {
-      logger.debug('Could not clear store data:', error.message);
     }
   }
 
@@ -550,6 +629,7 @@ class HyperWaBot {
     const text = msg.message?.conversation || msg.message?.extendedTextMessage?.text;
     if (!text) return;
 
+    // Handle special commands
     if (text === "requestPlaceholder" && !upsert.requestId) {
       const messageId = await this.sock.requestPlaceholderResend(msg.key);
       logger.info('🔄 Requested placeholder resync, ID:', messageId);
@@ -582,16 +662,37 @@ class HyperWaBot {
     if (this.isFirstConnection) {
       await this.sendStartupMessage();
       this.isFirstConnection = false;
+    } else {
+      logger.info('🔄 Reconnected - skipping startup message');
     }
     
-    this.retryCount = 0; // Reset retry counter on successful connection
+    if (this.telegramBridge) {
+      try {
+        await this.telegramBridge.syncWhatsAppConnection();
+      } catch (err) {
+        logger.warn('⚠️ Telegram sync error:', err.message);
+      }
+    }
+
+    // Close readline interface after successful connection
+    if (this.rl) {
+      this.rl.close();
+    }
   }
 
   async sendStartupMessage() {
     const owner = config.get('bot.owner');
     if (!owner) return;
     
+    const authMethod = this.useMongoAuth ? 'MongoDB' : 'File-based';
+    const authType = this.usePairingCode ? 'Pairing Code' : 'QR Code';
+    const storeStats = this.getStoreStats();
+    
     const startupMessage = `🚀 *${config.get('bot.name')} v${config.get('bot.version')}* is now online!\n\n` +
+
+
+      `• 🤖 Telegram Bridge: ${config.get('telegram.enabled') ? '✅' : '❌'}\n` +
+   
       `Type *${config.get('bot.prefix')}help* for available commands!`;
     
     try {
@@ -599,15 +700,28 @@ class HyperWaBot {
     } catch (error) {
       logger.warn('⚠️ Failed to send startup message:', error.message);
     }
+    
+    if (this.telegramBridge) {
+      try {
+        await this.telegramBridge.logToTelegram('🚀 HyperWa Bot Started', startupMessage);
+      } catch (err) {
+        logger.warn('⚠️ Telegram log failed:', err.message);
+      }
+    }
   }
 
   async connect() {
-    if (!this.sock) await this.startWhatsApp();
+    if (!this.sock) {
+      await this.startWhatsApp();
+    }
     return this.sock;
   }
 
   async sendMessage(jid, content) {
-    if (!this.sock) throw new Error('WhatsApp socket not initialized');
+    if (!this.sock) {
+      throw new Error('WhatsApp socket not initialized');
+    }
+    
     const preferredJid = this.getPreferredJID(jid);
     return await this.sock.sendMessage(preferredJid, content);
   }
@@ -615,8 +729,15 @@ class HyperWaBot {
   async shutdown() {
     logger.info('🛑 Shutting down HyperWa Userbot...');
     this.isShuttingDown = true;
+    
+    // Cleanup store
     this.store.cleanup();
     this.store.saveToFile();
+    
+    // Close readline interface
+    if (this.rl) {
+      this.rl.close();
+    }
     
     if (this.telegramBridge) {
       try {
@@ -626,8 +747,38 @@ class HyperWaBot {
       }
     }
     
-    if (this.sock) await this.sock.end();
+    if (this.sock) {
+      await this.sock.end();
+    }
+    
     logger.info('✅ HyperWa Userbot shutdown complete');
+  }
+
+  // Method to manually trigger pairing code (useful for commands)
+  async requestNewPairingCode(phoneNumber = null) {
+    if (!this.sock) {
+      throw new Error('WhatsApp socket not initialized');
+    }
+
+    try {
+      let targetPhone = phoneNumber;
+      
+      if (!targetPhone) {
+        targetPhone = await this.question('Please enter your phone number (with country code, e.g., 1234567890):\n');
+        
+        if (!this.isValidPhoneNumber(targetPhone)) {
+          throw new Error('Invalid phone number format');
+        }
+      }
+
+      this.pairingCode = await this.sock.requestPairingCode(targetPhone);
+      logger.info(`🔢 New pairing code: ${this.pairingCode}`);
+      
+      return this.pairingCode;
+    } catch (error) {
+      logger.error('❌ Failed to request new pairing code:', error);
+      throw error;
+    }
   }
 }
 
