@@ -381,45 +381,46 @@ async clearFilters() {
 async getContactInfo(jid) {
     if (!jid) return { phone: null, lid: null, name: null };
     
-    const contact = this.whatsappBot.store?.contacts?.[jid];
-    if (!contact) {
-        // Fallback: extract from JID
-        const prefix = jid.split('@')[0];
-        return { phone: /^\d+$/.test(prefix) ? prefix : null, lid: prefix, name: null };
-    }
-    
-    // NEW: Use the correct fields from Contact type
-    let phone = contact.phoneNumber ? contact.phoneNumber.replace(/^\+/, '') : null;
-    let lid = contact.lid || null;
-    let name = contact.name || contact.notify || null;
-    
-    // If we have LID but no phone, try to get from mapping
-    if (lid && !phone) {
+    try {
+        const contact = this.whatsappBot.store?.contacts?.[jid];
+        
+        if (!contact) {
+            logger.debug(`🔍 No contact found for JID: ${jid}`);
+            // For status messages, try to extract from JID
+            const prefix = jid.split('@')[0];
+            return { 
+                phone: /^\d+$/.test(prefix) ? prefix : null, 
+                lid: prefix, 
+                name: null 
+            };
+        }
+        
+        // Use the correct Contact type structure
+        let phone = contact.phoneNumber ? contact.phoneNumber.replace(/^\+/, '') : null;
+        let lid = contact.lid || null;
+        let name = contact.name || contact.notify || null;
+        
+        // Try LID/PN mapping if we have partial info
         try {
             const mapping = this.whatsappBot.sock?.signalRepository?.lidMapping;
             if (mapping) {
-                phone = await mapping.getPNForLID(lid);
+                if (lid && !phone) {
+                    phone = await mapping.getPNForLID(lid);
+                } else if (phone && !lid) {
+                    lid = await mapping.getLIDForPN(phone);
+                }
             }
-        } catch (error) {
-            logger.debug('Failed to get PN from LID mapping:', error.message);
+        } catch (mappingError) {
+            logger.debug('LID mapping lookup failed:', mappingError.message);
         }
+        
+        return { phone, lid, name };
+        
+    } catch (error) {
+        logger.error('❌ Error in getContactInfo:', error);
+        return { phone: null, lid: null, name: null };
     }
-    
-    // If we have phone but no LID, try to get from mapping
-    if (phone && !lid) {
-        try {
-            const mapping = this.whatsappBot.sock?.signalRepository?.lidMapping;
-            if (mapping) {
-                lid = await mapping.getLIDForPN(phone);
-            }
-        } catch (error) {
-            logger.debug('Failed to get LID from PN mapping:', error.message);
-        }
-    }
-    
-    return { phone, lid, name };
 }
-
     
 // ============================================================================
 
@@ -825,11 +826,16 @@ async handleStatusMessage(whatsappMsg, text) {
     try {
         if (!config.get('telegram.features.statusSync')) return;
         
+        // FIX: Handle missing participant
         const participant = whatsappMsg.key.participant;
+        if (!participant) {
+            logger.warn('⚠️ Status message missing participant, skipping');
+            return;
+        }
         
-        // ✅ AWAIT the phone number retrieval (THIS WAS MISSING!)
-        const phone = await this.getPhoneNumberFromJid(participant);
-        const contactName = this.contactMappings.get(phone) || `+${phone}`;
+        const contactInfo = await this.getContactInfo(participant);
+        const phone = contactInfo.phone || participant.split('@')[0];
+        const contactName = contactInfo.name || this.contactMappings.get(phone) || `+${phone}`;
         
         const topicId = await this.getOrCreateTopic('status@broadcast', whatsappMsg);
         if (!topicId) return;
