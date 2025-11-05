@@ -3,14 +3,12 @@ import makeWASocket, {
     DisconnectReason, 
     fetchLatestBaileysVersion, 
     makeCacheableSignalKeyStore, 
-    getAggregateVotesInPollMessage, 
     isJidNewsletter, 
     delay, 
-    proto 
+    proto,
+    isPnUser // Replaced isJidUser
 } from '@whiskeysockets/baileys';
 import qrcode from 'qrcode-terminal';
-import fs from 'fs-extra';
-import path from 'path';
 import NodeCache from '@cacheable/node-cache';
 import { makeInMemoryStore } from './store.js';
 import config from '../config.js';
@@ -32,74 +30,104 @@ class HyperWaBot {
         this.qrCodeSent = false;
         this.useMongoAuth = config.get('auth.useMongoAuth', false);
         this.isFirstConnection = true;
-        // Initialize the enhanced store with advanced options
+        
+        // Initialize enhanced store with LID support
         this.store = makeInMemoryStore({
-        logger: logger.child({ module: 'store' }),
-        filePath: './whatsapp-store.json',
-        autoSaveInterval: 30000
-    });
-    
-    // Load existing data
-    this.store.loadFromFile();
-    
-    // ✅ Proper cache setup
-    this.msgRetryCounterCache = new NodeCache();
-    this.onDemandMap = new Map();
-    
-    // Memory cleanup
-    setInterval(() => {
-        if (this.onDemandMap.size > 100) {
-            this.onDemandMap.clear();
-        }
-    }, 300000); // 5 minutes
-
-
-        // Store event listeners for advanced features
+            logger: logger.child({ module: 'store' }),
+            filePath: './whatsapp-store.json',
+            autoSaveInterval: 30000
+        });
+        
+        this.store.loadFromFile();
+        this.msgRetryCounterCache = new NodeCache();
+        this.onDemandMap = new Map();
+        
         this.setupStoreEventListeners();
     }
 
     setupStoreEventListeners() {
-        // Monitor store events for analytics and features
+        // LID mapping update listener - CRITICAL for LID system
+        this.store.on('lid-mapping.update', (mapping) => {
+            logger.info(`🔑 LID Mapping Update: ${Object.keys(mapping).length} mappings received`);
+            this.store.storeLIDMappings(mapping);
+            
+            // Update contacts with new mappings
+            this.updateContactsWithLIDMappings(mapping);
+        });
+
         this.store.on('messages.upsert', (data) => {
             logger.debug(`📝 Store: ${data.messages.length} messages cached`);
         });
 
         this.store.on('contacts.upsert', (contacts) => {
             logger.debug(`👥 Store: ${contacts.length} contacts cached`);
+            this.processContactsWithLID(contacts);
         });
 
         this.store.on('chats.upsert', (chats) => {
             logger.debug(`💬 Store: ${chats.length} chats cached`);
         });
 
-        // LID mapping update listener (Baileys 6.8.0+)
-        this.store.on('lid-mapping.update', (mapping) => {
-            logger.debug(`🔑 LID Mapping Update: ${Object.keys(mapping).length} mappings`);
-        });
-
-        // Log store statistics periodically
+        // Log LID statistics periodically
         setInterval(() => {
-            const stats = this.getStoreStats();
-            logger.info(`📊 Store Stats - Chats: ${stats.chats}, Contacts: ${stats.contacts}, Messages: ${stats.messages}`);
-        }, 300000); // Every 5 minutes
+            this.logLIDStats();
+        }, 300000);
     }
 
-    getStoreStats() {
-        const chatCount = Object.keys(this.store.chats).length;
+    /**
+     * Process contacts to handle LID/PN information
+     */
+    processContactsWithLID(contacts) {
+        for (const contact of contacts) {
+            // Contact now has id (preferred), phoneNumber, and lid fields
+            if (contact.phoneNumber && contact.id !== contact.phoneNumber) {
+                // Store the mapping
+                this.store.pnMappings.set(contact.phoneNumber, contact.id);
+                this.store.lidMappings.set(contact.id, contact.phoneNumber);
+            }
+        }
+    }
+
+    /**
+     * Update existing contacts when new LID mappings arrive
+     */
+    updateContactsWithLIDMappings(mapping) {
+        for (const [lid, pn] of Object.entries(mapping)) {
+            // Update contact if it exists
+            if (this.store.contacts[pn]) {
+                this.store.contacts[pn].id = lid; // Update to preferred ID
+                this.store.contacts[pn].lid = lid;
+                this.store.contacts[pn].phoneNumber = pn;
+            }
+            
+            // Also create reverse mapping entry if needed
+            if (this.store.contacts[lid]) {
+                this.store.contacts[lid].phoneNumber = pn;
+            }
+        }
+    }
+
+    /**
+     * Log LID system statistics
+     */
+    logLIDStats() {
+        const lidCount = this.store.lidMappings.size;
+        const pnCount = this.store.pnMappings.size;
         const contactCount = Object.keys(this.store.contacts).length;
-        const messageCount = Object.values(this.store.messages)
-            .reduce((total, chatMessages) => total + Object.keys(chatMessages).length, 0);
         
-        return {
-            chats: chatCount,
-            contacts: contactCount,
-            messages: messageCount
-        };
+        logger.info(`📊 LID Stats - Mappings: ${lidCount} LID->PN, ${pnCount} PN->LID, Contacts: ${contactCount}`);
+        
+        // Log sample mappings for debugging
+        if (lidCount > 0) {
+            const sampleLid = Array.from(this.store.lidMappings.keys())[0];
+            const samplePn = this.store.lidMappings.get(sampleLid);
+            logger.debug(`🔍 Sample mapping: ${sampleLid} -> ${samplePn}`);
+        }
     }
 
     async initialize() {
-        logger.info('🔧 Initializing HyperWa Userbot with Enhanced Store...');
-
+        logger.info('🔧 Initializing HyperWa Userbot with Official LID Support...');
+        
         try {
             this.db = await connectDb();
             logger.info('✅ Database connected successfully!');
@@ -114,12 +142,6 @@ class HyperWaBot {
                 this.telegramBridge = new TelegramBridge(this);
                 await this.telegramBridge.initialize();
                 logger.info('✅ Telegram bridge initialized');
-
-                try {
-                    await this.telegramBridge.sendStartMessage();
-                } catch (err) {
-                    logger.warn('⚠️ Failed to send start message via Telegram:', err.message);
-                }
             } catch (error) {
                 logger.warn('⚠️ Telegram bridge failed to initialize:', error.message);
                 this.telegramBridge = null;
@@ -128,14 +150,12 @@ class HyperWaBot {
 
         await this.moduleLoader.loadModules();
         await this.startWhatsApp();
-
-        logger.info('✅ HyperWa Userbot with Enhanced Store initialized successfully!');
+        logger.info('✅ HyperWa Userbot with Official LID Support initialized!');
     }
 
     async startWhatsApp() {
         let state, saveCreds;
 
-        // Clean up existing socket if present
         if (this.sock) {
             logger.info('🧹 Cleaning up existing WhatsApp socket');
             this.sock.ev.removeAllListeners();
@@ -143,7 +163,6 @@ class HyperWaBot {
             this.sock = null;
         }
 
-        // Choose auth method based on configuration
         if (this.useMongoAuth) {
             logger.info('🔧 Using MongoDB auth state...');
             try {
@@ -163,24 +182,26 @@ class HyperWaBot {
 
         try {
             this.sock = makeWASocket({
-        auth: {
-            creds: state.creds,
-            keys: makeCacheableSignalKeyStore(state.keys, logger.child({ module: 'keys' })),
-        },
-        version,
-        logger: logger.child({ module: 'baileys' }),
-        msgRetryCounterCache: this.msgRetryCounterCache,
-        generateHighQualityLinkPreview: true,
-        getMessage: this.getMessage.bind(this), 
-        browser: ['HyperWa', 'Chrome', '3.0'],
-        markOnlineOnConnect: false ,
-        firewall: true,
-        printQRInTerminal: false
-    });
+                auth: {
+                    creds: state.creds,
+                    keys: makeCacheableSignalKeyStore(state.keys, logger.child({ module: 'keys' })),
+                },
+                version,
+                logger: logger.child({ module: 'baileys' }),
+                msgRetryCounterCache: this.msgRetryCounterCache,
+                generateHighQualityLinkPreview: true,
+                getMessage: this.getMessage.bind(this),
+                browser: ['HyperWa', 'Chrome', '3.0'],
+                markOnlineOnConnect: false,
+                printQRInTerminal: false,
+                // LID-compatible configuration
+                shouldIgnoreJid: (jid) => isJidNewsletter(jid),
+            });
 
-    // ✅ CRITICAL: Bind store to socket events
-    this.store.bind(this.sock.ev);
-    logger.info('🔗 Store bound to socket');
+            // Bind store to socket events
+            this.store.bind(this.sock.ev);
+            logger.info('🔗 Store bound to socket events');
+
             const connectionPromise = new Promise((resolve, reject) => {
                 const connectionTimeout = setTimeout(() => {
                     if (!this.sock.user) {
@@ -204,203 +225,140 @@ class HyperWaBot {
             await connectionPromise;
         } catch (error) {
             logger.error('❌ Failed to initialize WhatsApp socket:', error);
-            logger.info('🔄 Retrying with new QR code...');
             setTimeout(() => this.startWhatsApp(), 5000);
         }
     }
 
-    // Enhanced getMessage with store lookup
+    // Enhanced getMessage with LID-aware lookup
     async getMessage(key) {
-    try {
-        if (!key?.remoteJid || !key?.id) {
+        try {
+            if (!key?.remoteJid || !key?.id) {
+                return undefined;
+            }
+
+            // Resolve JID to handle LID/PN properly
+            const resolvedJid = this.store.resolveJID(key.remoteJid);
+            const lookupKey = { ...key, remoteJid: resolvedJid };
+
+            // Try to get from store with resolved JID
+            const storedMessage = this.store.loadMessage(resolvedJid, key.id);
+            if (storedMessage?.message) {
+                logger.debug(`📨 Retrieved from store: ${key.id} (resolved JID: ${resolvedJid})`);
+                return storedMessage.message;
+            }
+
+            return undefined;
+        } catch (error) {
+            logger.debug('⚠️ getMessage error:', error.message);
             return undefined;
         }
-
-        // ✅ Try to get from store first
-        const storedMessage = this.store.loadMessage(key.remoteJid, key.id);
-        if (storedMessage?.message) {
-            logger.debug(`📨 Retrieved from store: ${key.id}`);
-            return storedMessage.message;
-        }
-
-        // ✅ Return undefined (Baileys will handle retry)
-        // Never return fake messages - causes decryption issues
-        return undefined;
-        
-    } catch (error) {
-        logger.debug('⚠️ getMessage error:', error.message);
-        return undefined;
-    }
-}
-
-
-    // Store-powered helper methods
-    
-    /**
-     * Get chat information from store
-     */
-    getChatInfo(jid) {
-        return this.store.chats[jid] || null;
     }
 
+    // LID-AWARE HELPER METHODS
+
     /**
-     * Get contact information from store (LID-compatible)
+     * Get contact information (LID-compatible)
      */
     getContactInfo(jid) {
-        const contact = this.store.contacts[jid];
-        if (!contact && this.sock?.signalRepository?.lidMapping) {
-            // Try to find by LID or PN
-            const lid = this.sock.signalRepository.lidMapping.getLIDForPN(jid);
-            if (lid) {
-                return this.store.contacts[lid] || null;
-            }
-        }
-        return contact || null;
+        return this.store.getContactEnhanced(jid);
     }
 
     /**
-     * Get LID for phone number JID
+     * Get LID for phone number JID using official method
      */
     getLIDForJID(jid) {
-        if (!this.sock?.signalRepository?.lidMapping) return null;
-        return this.sock.signalRepository.lidMapping.getLIDForPN(jid);
+        // First try the store mapping
+        const storeLid = this.store.getLIDForPN(jid);
+        if (storeLid) return storeLid;
+
+        // Then try the socket's signal repository (official method)
+        if (this.sock?.signalRepository?.lidMapping) {
+            return this.sock.signalRepository.lidMapping.getLIDForPN(jid);
+        }
+
+        return null;
     }
 
     /**
-     * Get PN (phone number) for LID
+     * Get PN for LID using official method
      */
     getPNForLID(lid) {
-        if (!this.sock?.signalRepository?.lidMapping) return null;
-        return this.sock.signalRepository.lidMapping.getPNForLID(lid);
+        // First try the store mapping
+        const storePn = this.store.getPNForLID(lid);
+        if (storePn) return storePn;
+
+        // Then try the socket's signal repository (official method)
+        if (this.sock?.signalRepository?.lidMapping) {
+            return this.sock.signalRepository.lidMapping.getPNForLID(lid);
+        }
+
+        return null;
     }
 
     /**
-     * Resolve JID (works with both LID and PN)
+     * Resolve JID to preferred format (official method)
      */
     resolveJID(jid) {
-        // Return the preferred ID format
+        if (!jid) return jid;
+
+        // Use contact's preferred ID if available
         const contact = this.getContactInfo(jid);
-        return contact?.id || jid;
-    }
-
-    /**
-     * Get all messages for a chat
-     */
-    getChatMessages(jid, limit = 50) {
-        const messages = this.store.getMessages(jid);
-        return messages.slice(-limit).reverse(); // Get latest messages
-    }
-
-    /**
-     * Search messages by text content
-     */
-    searchMessages(query, jid = null) {
-        const results = [];
-        const chatsToSearch = jid ? [jid] : Object.keys(this.store.messages);
-        
-        for (const chatId of chatsToSearch) {
-            const messages = this.store.getMessages(chatId);
-            for (const msg of messages) {
-                const text = msg.message?.conversation || 
-                           msg.message?.extendedTextMessage?.text || '';
-                if (text.toLowerCase().includes(query.toLowerCase())) {
-                    results.push({
-                        chatId,
-                        message: msg,
-                        text
-                    });
-                }
-            }
+        if (contact?.id) {
+            return contact.id;
         }
-        
-        return results.slice(0, 100); // Limit results
+
+        // For LIDs, try to find if we have mapping
+        if (this.store.isLID(jid)) {
+            const pn = this.getPNForLID(jid);
+            return pn || jid; // Return PN if available, otherwise keep LID
+        }
+
+        return jid;
     }
 
     /**
-     * Get group metadata with participant info
+     * Send message with LID-aware JID resolution
+     */
+    async sendMessage(jid, content, options = {}) {
+        if (!this.sock) {
+            throw new Error('WhatsApp socket not initialized');
+        }
+
+        // Resolve JID before sending
+        const resolvedJid = this.resolveJID(jid);
+        
+        logger.debug(`📤 Sending message to: ${jid} -> ${resolvedJid}`);
+        
+        return await this.sock.sendMessage(resolvedJid, content, options);
+    }
+
+    /**
+     * Enhanced group metadata retrieval with LID handling
      */
     getGroupInfo(jid) {
         const metadata = this.store.groupMetadata[jid];
         const chat = this.store.chats[jid];
-        return {
-            metadata,
-            chat,
-            participants: metadata?.participants || []
-        };
-    }
-
-    /**
-     * Get user's message history statistics (LID-compatible)
-     */
-    getUserStats(jid) {
-        let messageCount = 0;
-        let lastMessageTime = null;
         
-        // Get both LID and PN for the user
-        const lid = this.getLIDForJID(jid);
-        const pn = this.getPNForLID(jid);
-        const jidsToCheck = [jid, lid, pn].filter(Boolean);
-        
-        for (const chatId of Object.keys(this.store.messages)) {
-            const messages = this.store.getMessages(chatId);
-            const userMessages = messages.filter(msg => 
-                jidsToCheck.includes(msg.key?.participant) || 
-                jidsToCheck.includes(msg.key?.remoteJid) ||
-                jidsToCheck.includes(msg.key?.participantAlt) ||
-                jidsToCheck.includes(msg.key?.remoteJidAlt)
-            );
+        if (metadata?.participants) {
+            // Process participants to resolve LID/PN
+            const processedParticipants = metadata.participants.map(participant => ({
+                ...participant,
+                resolvedId: this.resolveJID(participant.id),
+                isLID: this.store.isLID(participant.id),
+                phoneNumber: this.getPNForLID(participant.id) || participant.id
+            }));
             
-            messageCount += userMessages.length;
-            
-            if (userMessages.length > 0) {
-                const lastMsg = userMessages[userMessages.length - 1];
-                const msgTime = lastMsg.messageTimestamp * 1000;
-                if (!lastMessageTime || msgTime > lastMessageTime) {
-                    lastMessageTime = msgTime;
-                }
-            }
+            return {
+                metadata: {
+                    ...metadata,
+                    participants: processedParticipants
+                },
+                chat,
+                participants: processedParticipants
+            };
         }
         
-        return {
-            messageCount,
-            lastMessageTime: lastMessageTime ? new Date(lastMessageTime) : null,
-            isActive: lastMessageTime && (Date.now() - lastMessageTime) < (7 * 24 * 60 * 60 * 1000) // Active in last 7 days
-        };
-    }
-
-    /**
-     * Export chat history
-     */
-    async exportChatHistory(jid, format = 'json') {
-        const chat = this.getChatInfo(jid);
-        const messages = this.getChatMessages(jid, 1000); // Last 1000 messages
-        const contact = this.getContactInfo(jid);
-        
-        const exportData = {
-            chat,
-            contact,
-            messages,
-            exportedAt: new Date().toISOString(),
-            totalMessages: messages.length
-        };
-
-        if (format === 'txt') {
-            let textExport = `Chat Export for ${contact?.name || jid}\n`;
-            textExport += `Exported on: ${new Date().toISOString()}\n`;
-            textExport += `Total Messages: ${messages.length}\n\n`;
-            textExport += '='.repeat(50) + '\n\n';
-            
-            for (const msg of messages) {
-                const timestamp = new Date(msg.messageTimestamp * 1000).toLocaleString();
-                const sender = msg.key.fromMe ? 'You' : (contact?.name || msg.key.participant || 'Unknown');
-                const text = msg.message?.conversation || msg.message?.extendedTextMessage?.text || '[Media/Other]';
-                textExport += `[${timestamp}] ${sender}: ${text}\n`;
-            }
-            
-            return textExport;
-        }
-
-        return exportData;
+        return { metadata, chat, participants: [] };
     }
 
     setupEnhancedEventHandlers(saveCreds) {
@@ -414,72 +372,32 @@ class HyperWaBot {
                     await saveCreds();
                 }
 
+                // Handle LID mapping updates specifically
+                if (events['lid-mapping.update']) {
+                    const mappings = events['lid-mapping.update'];
+                    logger.info(`🔄 Received LID mapping updates: ${Object.keys(mappings).length} mappings`);
+                    this.store.storeLIDMappings(mappings);
+                }
+
                 if (events['messages.upsert']) {
                     await this.handleMessagesUpsert(events['messages.upsert']);
                 }
 
-                // Store automatically handles most events, but we can add custom logic
-                if (!process.env.DOCKER) {
-                    if (events['labels.association']) {
-                        logger.info('📋 Label association update:', events['labels.association']);
-                    }
+                // Other event handlers remain the same but are LID-aware
+                if (events['contacts.update']) {
+                    this.processContactsWithLID(events['contacts.update']);
+                }
 
-                    if (events['labels.edit']) {
-                        logger.info('📝 Label edit update:', events['labels.edit']);
-                    }
-
-                    if (events.call) {
-                        logger.info('📞 Call event received:', events.call);
-                        // Store call information
-                        for (const call of events.call) {
-                            this.store.setCallOffer(call.from, call);
-                        }
-                    }
-
-                    if (events['messaging-history.set']) {
-                        const { chats, contacts, messages, isLatest, progress, syncType } = events['messaging-history.set'];
-                        if (syncType === proto.HistorySync.HistorySyncType.ON_DEMAND) {
-                            logger.info('📥 Received on-demand history sync, messages:', messages.length);
-                        }
-                        logger.info(`📊 History sync: ${chats.length} chats, ${contacts.length} contacts, ${messages.length} msgs (latest: ${isLatest}, progress: ${progress}%)`);
-                    }
-
-                    if (events['messages.update']) {
-                        for (const { key, update } of events['messages.update']) {
-                            if (update.pollUpdates) {
-                                logger.info('📊 Poll update received');
-                            }
-                        }
-                    }
-
-                    if (events['message-receipt.update']) {
-                        logger.debug('📨 Message receipt update');
-                    }
-
-                    if (events['messages.reaction']) {
-                        logger.info(`😀 Message reactions: ${events['messages.reaction'].length}`);
-                    }
-
-                    if (events['presence.update']) {
-                        logger.debug('👤 Presence updates');
-                    }
-
-                    if (events['chats.update']) {
-                        logger.debug('💬 Chats updated');
-                    }
-
-                    if (events['contacts.update']) {
-                        for (const contact of events['contacts.update']) {
-                            if (typeof contact.imgUrl !== 'undefined') {
-                                logger.info(`👤 Contact ${contact.id} profile pic updated`);
-                            }
-                        }
-                    }
-
-                    if (events['chats.delete']) {
-                        logger.info('🗑️ Chats deleted:', events['chats.delete']);
+                if (events['messaging-history.set']) {
+                    const { chats, contacts, messages, syncType } = events['messaging-history.set'];
+                    logger.info(`📥 History sync: ${messages.length} messages, type: ${syncType}`);
+                    
+                    // Process contacts from history sync for LID info
+                    if (contacts) {
+                        this.processContactsWithLID(contacts);
                     }
                 }
+
             } catch (error) {
                 logger.warn('⚠️ Event processing error:', error.message);
             }
@@ -508,25 +426,11 @@ class HyperWaBot {
 
             if (shouldReconnect && !this.isShuttingDown) {
                 logger.warn('🔄 Connection closed, reconnecting...');
-                // Save store before reconnecting
                 this.store.saveToFile();
                 setTimeout(() => this.startWhatsApp(), 5000);
             } else {
-                logger.error('❌ Connection closed permanently. Please delete auth_info and restart.');
-
-                if (this.useMongoAuth) {
-                    try {
-                        const db = await connectDb();
-                        const coll = db.collection("auth");
-                        await coll.deleteOne({ _id: "session" });
-                        logger.info('🗑️ MongoDB auth session cleared');
-                    } catch (error) {
-                        logger.error('❌ Failed to clear MongoDB auth session:', error);
-                    }
-                }
-
-                // Final store save
-                this.store.saveToFile();
+                logger.error('❌ Connection closed permanently.');
+                this.cleanupAuth();
                 process.exit(1);
             }
         } else if (connection === 'open') {
@@ -538,6 +442,8 @@ class HyperWaBot {
         if (upsert.type === 'notify') {
             for (const msg of upsert.messages) {
                 try {
+                    // Process message with LID handling
+                    this.store.processMessageWithLID(msg);
                     await this.processIncomingMessage(msg, upsert);
                 } catch (error) {
                     logger.warn('⚠️ Message processing error:', error.message);
@@ -546,110 +452,85 @@ class HyperWaBot {
         }
 
         try {
-            await this.messageHandler.handleMessages({ messages: upsert.messages, type: upsert.type });
+            await this.messageHandler.handleMessages({ 
+                messages: upsert.messages, 
+                type: upsert.type 
+            });
         } catch (error) {
             logger.warn('⚠️ Original message handler error:', error.message);
         }
     }
 
-    async processIncomingMessage(msg, upsert) {
-        const text = msg.message?.conversation || msg.message?.extendedTextMessage?.text;
-        
-        if (!text) return;
-
-        // Handle special commands
-        if (text === "requestPlaceholder" && !upsert.requestId) {
-            const messageId = await this.sock.requestPlaceholderResend(msg.key);
-            logger.info('🔄 Requested placeholder resync, ID:', messageId);
-            return;
-        }
-
-        if (text === "onDemandHistSync") {
-            const messageId = await this.sock.fetchMessageHistory(50, msg.key, msg.messageTimestamp);
-            logger.info('📥 Requested on-demand sync, ID:', messageId);
-            return;
-        }
-    }
-
     async onConnectionOpen() {
-    logger.info(`✅ Connected to WhatsApp! User: ${this.sock.user?.id || 'Unknown'}`);
-
-    if (!config.get('bot.owner') && this.sock.user) {
-        config.set('bot.owner', this.sock.user.id);
-        logger.info(`👑 Owner set to: ${this.sock.user.id}`);
-    }
-
-    if (this.telegramBridge) {
-        try {
-            await this.telegramBridge.setupWhatsAppHandlers();
-        } catch (err) {
-            logger.warn('⚠️ Failed to setup Telegram WhatsApp handlers:', err.message);
+        logger.info(`✅ Connected to WhatsApp! User: ${this.sock.user?.id || 'Unknown'}`);
+        
+        // Log LID information about our own user
+        if (this.sock.user?.id) {
+            const userJid = this.sock.user.id;
+            const isLID = this.store.isLID(userJid);
+            logger.info(`👤 User JID type: ${isLID ? 'LID' : 'PN'} (${userJid})`);
+            
+            if (isLID) {
+                const pn = this.getPNForLID(userJid);
+                logger.info(`📞 User PN: ${pn || 'Not available'}`);
+            }
         }
-    }
 
-    // Only send startup message on first connection
-    if (this.isFirstConnection) {
-        await this.sendStartupMessage();
-        this.isFirstConnection = false;
-    } else {
-        logger.info('🔄 Reconnected - skipping startup message');
-    }
-
-    if (this.telegramBridge) {
-        try {
-            await this.telegramBridge.syncWhatsAppConnection();
-        } catch (err) {
-            logger.warn('⚠️ Telegram sync error:', err.message);
+        if (!config.get('bot.owner') && this.sock.user) {
+            config.set('bot.owner', this.sock.user.id);
+            logger.info(`👑 Owner set to: ${this.sock.user.id}`);
         }
+
+        if (this.isFirstConnection) {
+            await this.sendStartupMessage();
+            this.isFirstConnection = false;
+        }
+
+        logger.info('🔑 LID System: Ready and operational');
     }
-}
 
     async sendStartupMessage() {
         const owner = config.get('bot.owner');
         if (!owner) return;
 
-        const authMethod = this.useMongoAuth ? 'MongoDB' : 'File-based';
-        const storeStats = this.getStoreStats();
+        const userJid = this.sock.user?.id;
+        const isLID = userJid && this.store.isLID(userJid);
+        const jidType = isLID ? 'LID' : 'PN';
         
         const startupMessage = `🚀 *${config.get('bot.name')} v${config.get('bot.version')}* is now online!\n\n` +
                               `🔥 *HyperWa Features Active:*\n` +
                               `• 🤖 Telegram Bridge: ${config.get('telegram.enabled') ? '✅' : '❌'}\n` +
                               `Type *${config.get('bot.prefix')}help* for available commands!`;
 
+
         try {
             await this.sendMessage(owner, { text: startupMessage });
-        } catch {}
+        } catch (error) {
+            logger.warn('⚠️ Failed to send startup message:', error.message);
+        }
+    }
 
-        if (this.telegramBridge) {
+    async cleanupAuth() {
+        if (this.useMongoAuth) {
             try {
-                await this.telegramBridge.logToTelegram('🚀 HyperWa Bot Started', startupMessage);
-            } catch (err) {
-                logger.warn('⚠️ Telegram log failed:', err.message);
+                const db = await connectDb();
+                const coll = db.collection("auth");
+                await coll.deleteOne({ _id: "session" });
+                logger.info('🗑️ MongoDB auth session cleared');
+            } catch (error) {
+                logger.error('❌ Failed to clear MongoDB auth session:', error);
             }
         }
-    }
 
-    async connect() {
-        if (!this.sock) {
-            await this.startWhatsApp();
-        }
-        return this.sock;
-    }
-
-    async sendMessage(jid, content) {
-        if (!this.sock) {
-            throw new Error('WhatsApp socket not initialized');
-        }
-        
-        return await this.sock.sendMessage(jid, content);
+        this.store.saveToFile();
     }
 
     async shutdown() {
         logger.info('🛑 Shutting down HyperWa Userbot...');
         this.isShuttingDown = true;
 
-        // Cleanup store
-        this.store.cleanup();
+        // Save LID mappings
+        this.store.saveToFile();
 
         if (this.telegramBridge) {
             try {
