@@ -303,6 +303,13 @@ class HyperWaBot {
                     logger.info(`📊 recv ${chats.length} chats, ${contacts.length} contacts, ${messages.length} msgs (is latest: ${isLatest}, progress: ${progress}%), type: ${syncType}`);
                 }
 
+                // History sync notification (for advanced processing)
+                if (events['messaging-history.set']?.syncType === proto.HistorySync.HistorySyncType.FULL) {
+                    // You can use downloadAndProcessHistorySyncNotification here if needed
+                    // for advanced history processing (e.g., downloading media from history)
+                    logger.debug('📚 Full history sync available for processing');
+                }
+
                 // Messages update
                 if (events['messages.update']) {
                     logger.info('📝 Messages update:', JSON.stringify(events['messages.update'], undefined, 2));
@@ -381,8 +388,8 @@ class HyperWaBot {
         }
 
         if (connection === 'close') {
-            // Official: Use Boom for proper error handling
-            const statusCode = (lastDisconnect?.error as Boom)?.output?.statusCode;
+            // JavaScript-compatible Boom error handling
+            const statusCode = lastDisconnect?.error?.output?.statusCode;
             const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
 
             if (shouldReconnect && !this.isShuttingDown) {
@@ -505,28 +512,6 @@ class HyperWaBot {
             } catch (err) {
                 logger.warn('⚠️ Telegram log failed:', err.message);
             }
-        }
-    }
-
-    // Official: Send message with typing indicator
-    async sendMessageWithTyping(content, jid) {
-        if (!this.sock) {
-            throw new Error('WhatsApp socket not initialized');
-        }
-
-        try {
-            await this.sock.presenceSubscribe(jid);
-            await delay(500);
-
-            await this.sock.sendPresenceUpdate('composing', jid);
-            await delay(2000);
-
-            await this.sock.sendPresenceUpdate('paused', jid);
-
-            return await this.sock.sendMessage(jid, content);
-        } catch (error) {
-            logger.error('❌ Send message with typing error:', error);
-            throw error;
         }
     }
 
@@ -717,10 +702,23 @@ class HyperWaBot {
     }
 
     /**
-     * Check if JID is a user (replaces deprecated isJidUser)
+     * Check if JID is a user (official isPnUser from Baileys)
+     * Replaces deprecated isJidUser
      */
     isPnUser(jid) {
-        return jid?.endsWith('@s.whatsapp.net') || jid?.endsWith('@lid');
+        return isPnUser(jid);
+    }
+
+    /**
+     * Get chat addressing mode (official WAMessageAddressingMode)
+     * Returns the preferred ID type for a chat:
+     * - WAMessageAddressingMode.DEFAULT (0)
+     * - WAMessageAddressingMode.LID (1) - prefers LID
+     * - WAMessageAddressingMode.PN (2) - prefers phone number
+     */
+    getChatAddressingMode(jid) {
+        const chat = this.store.chats[jid];
+        return chat?.addressingMode || WAMessageAddressingMode.DEFAULT;
     }
 
     // ==================== Core Methods ====================
