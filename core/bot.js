@@ -314,23 +314,6 @@ class HyperWaBot {
     return /^\d{10,15}$/.test(phone);
   }
 
-  // Enhanced group metadata caching
-  async getCachedGroupMetadata(jid) {
-    try {
-      let metadata = this.groupMetadataCache.get(jid);
-      
-      if (!metadata) {
-        metadata = await this.sock.groupMetadata(jid);
-        this.groupMetadataCache.set(jid, metadata, 300);
-        logger.debug(`💾 Cached group metadata for: ${jid}`);
-      }
-      
-      return metadata;
-    } catch (error) {
-      logger.warn(`⚠️ Failed to get group metadata for ${jid}:`, error.message);
-      return null;
-    }
-  }
 
   // Enhanced getMessage with better error handling
   async getMessage(key) {
@@ -367,95 +350,7 @@ class HyperWaBot {
     }
   }
 
-  // Enhanced LID-aware contact resolution
-  getContactInfo(jid) {
-    let contact = this.store.contacts[jid];
-    if (contact) return contact;
-
-    if (this.sock?.signalRepository?.lidMapping) {
-      if (isPnUser(jid)) {
-        const lid = this.sock.signalRepository.lidMapping.getLIDForPN(jid);
-        if (lid) {
-          contact = this.store.contacts[lid];
-        }
-      } else {
-        const pn = this.sock.signalRepository.lidMapping.getPNForLID(jid);
-        if (pn) {
-          contact = this.store.contacts[pn];
-        }
-      }
-    }
-
-    return contact || null;
-  }
-
-  // Enhanced JID resolution with LID support
-  resolveJID(jid) {
-    const contact = this.getContactInfo(jid);
-    return contact?.id || jid;
-  }
-
-  // Get preferred JID format (LID if available)
-  getPreferredJID(jid) {
-    if (!this.sock?.signalRepository?.lidMapping) return jid;
-    
-    if (isPnUser(jid)) {
-      const lid = this.sock.signalRepository.lidMapping.getLIDForPN(jid);
-      return lid || jid;
-    }
-    
-    return jid;
-  }
-
-  // Enhanced message search with LID support
-  searchMessages(query, jid = null) {
-    const results = [];
-    const chatsToSearch = jid ? [jid] : Object.keys(this.store.messages);
-    
-    for (const chatId of chatsToSearch) {
-      const messages = this.store.getMessages(chatId);
-      for (const msg of messages) {
-        const text = msg.message?.conversation || 
-                    msg.message?.extendedTextMessage?.text || 
-                    msg.message?.imageMessage?.caption || '';
-        
-        if (text.toLowerCase().includes(query.toLowerCase())) {
-          const senderJid = msg.key.fromMe ? 
-            'You' : 
-            this.resolveSenderInfo(msg.key.participantAlt || msg.key.participant);
-          
-          results.push({
-            chatId,
-            message: msg,
-            text,
-            sender: senderJid,
-            timestamp: msg.messageTimestamp
-          });
-        }
-      }
-    }
-    
-    return results.slice(0, 100);
-  }
-
-  resolveSenderInfo(jid) {
-    if (!jid) return 'Unknown';
-    
-    const contact = this.getContactInfo(jid);
-    if (contact?.name) return contact.name;
-    
-    if (this.sock?.signalRepository?.lidMapping) {
-      if (isPnUser(jid)) {
-        const lid = this.sock.signalRepository.lidMapping.getLIDForPN(jid);
-        if (lid) {
-          const lidContact = this.store.contacts[lid];
-          if (lidContact?.name) return lidContact.name;
-        }
-      }
-    }
-    
-    return jid;
-  }
+ 
 
   setupEnhancedEventHandlers(saveCreds) {
     this.sock.ev.process(async (events) => {
@@ -716,14 +611,13 @@ class HyperWaBot {
     return this.sock;
   }
 
-  async sendMessage(jid, content) {
-    if (!this.sock) {
-      throw new Error('WhatsApp socket not initialized');
+    async sendMessage(jid, content) {
+        if (!this.sock) {
+            throw new Error('WhatsApp socket not initialized');
+        }
+        
+        return await this.sock.sendMessage(jid, content);
     }
-    
-    const preferredJid = this.getPreferredJID(jid);
-    return await this.sock.sendMessage(preferredJid, content);
-  }
 
   async shutdown() {
     logger.info('🛑 Shutting down HyperWa Userbot...');
