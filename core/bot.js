@@ -49,10 +49,7 @@ class HyperWaBot {
             maxKeys: 500
         });
         this.onDemandMap = new Map();
-        this.autoReply = config.get('features.autoReply', false);
-        this.enableTypingIndicators = config.get('features.typingIndicators', true);
-        this.autoReadMessages = config.get('features.autoReadMessages', true);
-        
+
         // Simple memory cleanup
         setInterval(() => {
             if (this.onDemandMap.size > 100) {
