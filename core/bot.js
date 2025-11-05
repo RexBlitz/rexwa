@@ -23,7 +23,7 @@ import MessageHandler from './message-handler.js';
 import { connectDb } from '../utils/db.js';
 import ModuleLoader from './module-loader.js';
 import { useMongoAuthState } from '../utils/mongoAuthState.js';
-
+import readline from 'readline';
 class HyperWaBot {
     constructor() {
         this.sock = null;
@@ -44,7 +44,13 @@ class HyperWaBot {
             filePath: './whatsapp-store.json',
             autoSaveInterval: 30000
         });
-        
+
+            // Create readline interface for pairing code input
+    this.rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout
+    });
+
         this.store.loadFromFile();
         
         // Cache setup (official way)
@@ -133,99 +139,157 @@ class HyperWaBot {
         logger.info('✅ HyperWa Userbot initialized successfully!');
     }
 
-    async startWhatsApp() {
-        let state, saveCreds;
+  async startWhatsApp() {
+    let state, saveCreds;
 
-        if (this.sock) {
-            logger.info('🧹 Cleaning up existing WhatsApp socket');
-            this.sock.ev.removeAllListeners();
-            await this.sock.end();
-            this.sock = null;
-        }
+    // Clean up existing socket
+    if (this.sock) {
+      logger.info('🧹 Cleaning up existing WhatsApp socket');
+      this.sock.ev.removeAllListeners();
+      await this.sock.end();
+      this.sock = null;
+    }
 
-        if (this.useMongoAuth) {
-            logger.info('🔧 Using MongoDB auth state...');
-            try {
-                ({ state, saveCreds } = await useMongoAuthState());
-            } catch (error) {
-                logger.error('❌ Failed to initialize MongoDB auth state:', error);
-                logger.info('🔄 Falling back to file-based auth...');
-                ({ state, saveCreds } = await useMultiFileAuthState(this.authPath));
-            }
-        } else {
-            logger.info('🔧 Using file-based auth state...');
-            ({ state, saveCreds } = await useMultiFileAuthState(this.authPath));
-        }
+    // Auth state initialization
+    if (this.useMongoAuth) {
+      logger.info('🔧 Using MongoDB auth state...');
+      try {
+        ({ state, saveCreds } = await useMongoAuthState());
+      } catch (error) {
+        logger.error('❌ Failed to initialize MongoDB auth state:', error);
+        logger.info('🔄 Falling back to file-based auth...');
+        ({ state, saveCreds } = await useMultiFileAuthState(this.authPath));
+      }
+    } else {
+      logger.info('🔧 Using file-based auth state...');
+      ({ state, saveCreds } = await useMultiFileAuthState(this.authPath));
+    }
 
-        const { version, isLatest } = await fetchLatestBaileysVersion();
-        logger.info(`📱 Using WA v${version.join('.')}, isLatest: ${isLatest}`);
+    const { version, isLatest } = await fetchLatestBaileysVersion();
+    logger.info(`📱 Using WA v${version.join('.')}, isLatest: ${isLatest}`);
 
-        try {
-            this.sock = makeWASocket({
-                version,
-                logger: logger.child({ module: 'baileys' }),
-                auth: {
-                    creds: state.creds,
-                    keys: makeCacheableSignalKeyStore(state.keys, logger.child({ module: 'keys' })),
-                },
-                msgRetryCounterCache: this.msgRetryCounterCache,
-                generateHighQualityLinkPreview: true,
-                getMessage: this.getMessage.bind(this),
-                browser: ['HyperWa', 'Chrome', '3.0'],
-                markOnlineOnConnect: false,
-                printQRInTerminal: false
-            });
+    try {
+      // Enhanced socket configuration with LID support
+      this.sock = makeWASocket({
+        auth: {
+          creds: state.creds,
+          keys: makeCacheableSignalKeyStore(state.keys, logger.child({ module: 'keys' })),
+        },
+        version,
+        logger: logger.child({ module: 'baileys' }),
+        msgRetryCounterCache: this.msgRetryCounterCache,
+        generateHighQualityLinkPreview: true,
+        getMessage: this.getMessage.bind(this),
+        
+        // Enhanced browser configuration
+        browser: config.get('bot.browser') || Browsers.macOS('Chrome'),
+        
+        // Critical performance options
+        markOnlineOnConnect: config.get('bot.markOnlineOnConnect', false),
+        syncFullHistory: config.get('bot.syncFullHistory', false),
+        shouldSyncHistoryMessage: config.get('bot.shouldSyncHistory', () => true),
+        fireInitQueries: config.get('bot.fireInitQueries', true),
+        retryRequestDelayMs: config.get('bot.retryDelay', 1000),
+        
+        // Group metadata caching to avoid rate limits
+        cachedGroupMetadata: this.getCachedGroupMetadata.bind(this),
+        
+        // Security
+        firewall: config.get('bot.firewall', true),
+        printQRInTerminal: config.get('bot.printQRInTerminal', false)
+      });
 
             // Bind store to socket (official way)
             this.store.bind(this.sock.ev);
             logger.info('🔗 Store bound to socket');
 
-            // Official: Pairing code for Web clients
-            if (this.usePairingCode && !this.sock.authState.creds.registered) {
-                const phoneNumber = config.get('auth.phoneNumber');
-                if (phoneNumber) {
-                    const code = await this.sock.requestPairingCode(phoneNumber);
-                    logger.info(`📱 Pairing code: ${code}`);
-                    
-                    if (this.telegramBridge) {
-                        try {
-                            await this.telegramBridge.sendMessage(`🔐 *Pairing Code*\n\nYour pairing code is: \`${code}\`\n\nEnter this code in WhatsApp Web to link your device.`);
-                        } catch (error) {
-                            logger.warn('⚠️ Failed to send pairing code via Telegram:', error.message);
-                        }
-                    }
-                } else {
-                    logger.warn('⚠️ Pairing code enabled but no phone number configured. Set auth.phoneNumber in config.');
-                }
-            }
+         // Handle pairing code if enabled and not registered
+      if (this.usePairingCode && !state.creds.registered) {
+        await this.handlePairingCode();
+      }
 
-            const connectionPromise = new Promise((resolve, reject) => {
-                const connectionTimeout = setTimeout(() => {
-                    if (!this.sock.user) {
-                        logger.warn('❌ QR code scan timed out after 30 seconds');
-                        this.sock.ev.removeAllListeners();
-                        this.sock.end();
-                        this.sock = null;
-                        reject(new Error('QR code scan timed out'));
-                    }
-                }, 30000);
+      const connectionPromise = new Promise((resolve, reject) => {
+        const connectionTimeout = setTimeout(() => {
+          if (!this.sock.user) {
+            logger.warn('❌ Connection timed out after 30 seconds');
+            this.sock.ev.removeAllListeners();
+            this.sock.end();
+            this.sock = null;
+            reject(new Error('Connection timed out'));
+          }
+        }, 30000);
 
-                this.sock.ev.on('connection.update', update => {
-                    if (update.connection === 'open') {
-                        clearTimeout(connectionTimeout);
-                        resolve();
-                    }
-                });
-            });
+        this.sock.ev.on('connection.update', update => {
+          if (update.connection === 'open') {
+            clearTimeout(connectionTimeout);
+            resolve();
+          }
+        });
+      });
 
-            this.setupEventHandlers(saveCreds);
-            await connectionPromise;
-        } catch (error) {
-            logger.error('❌ Failed to initialize WhatsApp socket:', error);
-            logger.info('🔄 Retrying with new QR code...');
-            setTimeout(() => this.startWhatsApp(), 5000);
-        }
+      this.setupEnhancedEventHandlers(saveCreds);
+      await connectionPromise;
+
+    } catch (error) {
+      logger.error('❌ Failed to initialize WhatsApp socket:', error);
+      logger.info('🔄 Retrying with new QR code...');
+      setTimeout(() => this.startWhatsApp(), 5000);
     }
+  }
+
+  // Handle pairing code authentication
+  async handlePairingCode() {
+    try {
+      logger.info('🔐 Pairing code authentication requested');
+      
+      let phoneNumber = config.get('auth.phoneNumber');
+      
+      // If phone number not in config, ask user
+      if (!phoneNumber) {
+        phoneNumber = await this.question('Please enter your phone number (with country code, e.g., 1234567890):\n');
+        
+        // Validate phone number format
+        if (!this.isValidPhoneNumber(phoneNumber)) {
+          logger.error('❌ Invalid phone number format. Please include country code without + sign.');
+          process.exit(1);
+        }
+      }
+
+      logger.info(`📱 Requesting pairing code for: ${phoneNumber}`);
+      
+      // Request pairing code
+      this.pairingCode = await this.sock.requestPairingCode(phoneNumber);
+      
+      logger.info(`🔢 Pairing code: ${this.pairingCode}`);
+      
+      // Send pairing code via Telegram if bridge is enabled
+      if (this.telegramBridge) {
+        try {
+          await this.telegramBridge.sendPairingCode(this.pairingCode, phoneNumber);
+        } catch (error) {
+          logger.warn('⚠️ Failed to send pairing code via Telegram:', error.message);
+        }
+      }
+      
+      // Also show in console
+      console.log('\n' + '='.repeat(50));
+      console.log(`🔢 WHATSAPP PAIRING CODE: ${this.pairingCode}`);
+      console.log('='.repeat(50) + '\n');
+      
+      logger.info('⏳ Waiting for pairing confirmation...');
+      
+    } catch (error) {
+      logger.error('❌ Failed to request pairing code:', error);
+      throw error;
+    }
+  }
+
+  // Validate phone number format (E.164 without +)
+  isValidPhoneNumber(phone) {
+    // Basic validation - should contain only digits and be between 10-15 digits
+    return /^\d{10,15}$/.test(phone);
+  }
+
 
     // Official getMessage implementation (returns undefined, not fake messages)
     async getMessage(key) {
