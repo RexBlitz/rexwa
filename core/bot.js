@@ -34,8 +34,7 @@ class HyperWaBot {
         this.qrCodeSent = false;
         this.useMongoAuth = config.get('auth.useMongoAuth', false);
         this.isFirstConnection = true;
-        
-        this.jidResolver = new JidResolver(this, this.store.contacts);
+        this.jidResolver = new JidResolver(this, new Map());
         // Initialize the enhanced store with advanced options
         this.store = makeInMemoryStore({
         logger: logger.child({ module: 'store' }),
