@@ -32,7 +32,7 @@ class HyperWaBot {
         this.moduleLoader = new ModuleLoader(this);
         this.qrCodeSent = false;
         this.useMongoAuth = config.get('auth.useMongoAuth', false);
-        
+        this.isFirstConnection = true;
         // Initialize the enhanced store with advanced options
         this.store = makeInMemoryStore({
             logger: logger.child({ module: 'store' }),
@@ -43,13 +43,9 @@ class HyperWaBot {
         // Load existing store data on startup
         this.store.loadFromFile();
         
-        // Enhanced features from example - SIMPLE VERSION
-        this.msgRetryCounterCache = new NodeCache({
-            stdTTL: 300,
-            maxKeys: 500
-        });
-        this.onDemandMap = new Map();
-
+    this.msgRetryCounterCache = new NodeCache();
+    this.onDemandMap = new Map();
+        
         // Simple memory cleanup
         setInterval(() => {
             if (this.onDemandMap.size > 100) {
@@ -154,39 +150,37 @@ class HyperWaBot {
 
         try {
             this.sock = makeWASocket({
-                auth: {
-                    creds: state.creds,
-                    keys: makeCacheableSignalKeyStore(state.keys, logger.child({ module: 'signal-keys' })),
-                },
-                version,
-                printQRInTerminal: false,
-                logger: logger.child({ module: 'baileys' }),
-                msgRetryCounterCache: this.msgRetryCounterCache,
-                generateHighQualityLinkPreview: true,
-                getMessage: this.getMessage.bind(this),
-                browser: ['HyperWa', 'Chrome', '3.0'],
-            });
+    auth: {
+        creds: state.creds,
+        keys: makeCacheableSignalKeyStore(state.keys, logger.child({ module: 'signal-keys' })),
+    },
+    version,
+    printQRInTerminal: false,
+    logger: logger.child({ module: 'baileys' }),
+    msgRetryCounterCache: this.msgRetryCounterCache,
+    generateHighQualityLinkPreview: true,
+    getMessage: this.getMessage.bind(this),
+    browser: ['HyperWa', 'Chrome', '3.0'],
+});
 
-            // 🧩 Optional Enhancements for LID Future-Proofing
-        this.sock.ev.on('lid-mapping.update', mapping => {
-       logger.info('🔄 LID mapping updated:', mapping);
-       });
+// 🧩 Optional Enhancements for LID Future-Proofing
+this.sock.ev.on('lid-mapping.update', mapping => {
+    logger.info('🔄 LID mapping updated:', mapping);
+});
 
-     this.sock.resolvePnFromLid = async (lidJid) => {
-         try {
+this.sock.resolvePnFromLid = async (lidJid) => {
+    try {
         const pn = await this.sock.signalRepository.lidMapping.getPNForLID(lidJid);
         return pn || lidJid; // fallback if not found
-      } catch (err) {
+    } catch (err) {
         logger.warn('⚠️ Failed to resolve PN for LID:', err.message);
         return lidJid;
     }
 };
 
-            // CRITICAL: Bind store to socket events for data persistence
- 
+    // ✅ CRITICAL: Bind store to socket events
     this.store.bind(this.sock.ev);
     logger.info('🔗 Store bound to socket');
-
             const connectionPromise = new Promise((resolve, reject) => {
                 const connectionTimeout = setTimeout(() => {
                     if (!this.sock.user) {
@@ -407,31 +401,37 @@ class HyperWaBot {
     }
 
     async onConnectionOpen() {
-        logger.info(`✅ Connected to WhatsApp! User: ${this.sock.user?.id || 'Unknown'}`);
+    logger.info(`✅ Connected to WhatsApp! User: ${this.sock.user?.id || 'Unknown'}`);
 
-        if (!config.get('bot.owner') && this.sock.user) {
-            config.set('bot.owner', this.sock.user.id);
-            logger.info(`👑 Owner set to: ${this.sock.user.id}`);
-        }
+    if (!config.get('bot.owner') && this.sock.user) {
+        config.set('bot.owner', this.sock.user.id);
+        logger.info(`👑 Owner set to: ${this.sock.user.id}`);
+    }
 
-        if (this.telegramBridge) {
-            try {
-                await this.telegramBridge.setupWhatsAppHandlers();
-            } catch (err) {
-                logger.warn('⚠️ Failed to setup Telegram WhatsApp handlers:', err.message);
-            }
-        }
-
-        await this.sendStartupMessage();
-
-        if (this.telegramBridge) {
-            try {
-                await this.telegramBridge.syncWhatsAppConnection();
-            } catch (err) {
-                logger.warn('⚠️ Telegram sync error:', err.message);
-            }
+    if (this.telegramBridge) {
+        try {
+            await this.telegramBridge.setupWhatsAppHandlers();
+        } catch (err) {
+            logger.warn('⚠️ Failed to setup Telegram WhatsApp handlers:', err.message);
         }
     }
+
+    // Only send startup message on first connection
+    if (this.isFirstConnection) {
+        await this.sendStartupMessage();
+        this.isFirstConnection = false;
+    } else {
+        logger.info('🔄 Reconnected - skipping startup message');
+    }
+
+    if (this.telegramBridge) {
+        try {
+            await this.telegramBridge.syncWhatsAppConnection();
+        } catch (err) {
+            logger.warn('⚠️ Telegram sync error:', err.message);
+        }
+    }
+}
 
     async sendStartupMessage() {
         const owner = config.get('bot.owner');
