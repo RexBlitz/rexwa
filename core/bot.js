@@ -386,7 +386,6 @@ this.sock.resolvePnFromLid = async (lidJid) => {
             logger.info('📥 Requested on-demand sync, ID:', messageId);
             return;
         }
-
     }
 
     async onConnectionOpen() {
