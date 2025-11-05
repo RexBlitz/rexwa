@@ -220,7 +220,7 @@ this.sock.resolvePnFromLid = async (lidJid) => {
         return undefined;
     }
 }
-    setupEnhancedEventHandlers(saveCreds) {
+setupEnhancedEventHandlers(saveCreds) {
         this.sock.ev.process(async (events) => {
             try {
                 if (events['connection.update']) {
