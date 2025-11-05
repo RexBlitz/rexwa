@@ -435,55 +435,64 @@ class HyperWaBot {
         });
     }
 
-    async handleConnectionUpdate(update) {
-        const { connection, lastDisconnect, qr } = update;
-
-        if (qr && !this.usePairingCode) {
-            logger.info('📱 WhatsApp QR code generated');
-            qrcode.generate(qr, { small: true });
-
-            if (this.telegramBridge) {
-                try {
-                    await this.telegramBridge.sendQRCode(qr);
-                } catch (error) {
-                    logger.warn('⚠️ TelegramBridge failed to send QR:', error.message);
-                }
-            }
+  async handleConnectionUpdate(update) {
+    const { connection, lastDisconnect, qr, isNewLogin } = update;
+    
+    if (qr && !this.usePairingCode) {
+      logger.info('📱 WhatsApp QR code generated');
+      qrcode.generate(qr, { small: true });
+      
+      if (this.telegramBridge) {
+        try {
+          await this.telegramBridge.sendQRCode(qr);
+        } catch (error) {
+          logger.warn('⚠️ TelegramBridge failed to send QR:', error.message);
         }
-
-        if (connection === 'close') {
-            // JavaScript-compatible Boom error handling
-            const statusCode = lastDisconnect?.error?.output?.statusCode;
-            const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-
-            if (shouldReconnect && !this.isShuttingDown) {
-                logger.warn('🔄 Connection closed, reconnecting...');
-                this.store.saveToFile();
-                setTimeout(() => this.startWhatsApp(), 5000);
-            } else {
-                logger.error('❌ Connection closed permanently. You are logged out.');
-
-                if (this.useMongoAuth) {
-                    try {
-                        const db = await connectDb();
-                        const coll = db.collection("auth");
-                        await coll.deleteOne({ _id: "session" });
-                        logger.info('🗑️ MongoDB auth session cleared');
-                    } catch (error) {
-                        logger.error('❌ Failed to clear MongoDB auth session:', error);
-                    }
-                }
-
-                this.store.saveToFile();
-                process.exit(1);
-            }
-        } else if (connection === 'open') {
-            await this.onConnectionOpen();
-        }
-
-        logger.info('🔄 connection update', update);
+      }
     }
+    
+    if (isNewLogin) {
+      logger.info('🎉 New login detected!');
+    }
+    
+    if (connection === 'close') {
+      const statusCode = lastDisconnect?.error?.output?.statusCode || 0;
+      const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+      
+      if (shouldReconnect && !this.isShuttingDown) {
+        logger.warn('🔄 Connection closed, reconnecting...');
+        this.store.saveToFile();
+        setTimeout(() => this.startWhatsApp(), 5000);
+      } else {
+        logger.error('❌ Connection closed permanently. Please restart the bot.');
+        await this.clearAuthState();
+        this.store.saveToFile();
+        process.exit(1);
+      }
+    } else if (connection === 'open') {
+      await this.onConnectionOpen();
+    }
+  }
 
+  async clearAuthState() {
+    if (this.useMongoAuth) {
+      try {
+        const db = await connectDb();
+        const coll = db.collection("auth");
+        await coll.deleteOne({ _id: "session" });
+        logger.info('🗑️ MongoDB auth session cleared');
+      } catch (error) {
+        logger.error('❌ Failed to clear MongoDB auth session:', error);
+      }
+    } else {
+      try {
+        await fs.remove(this.authPath);
+        logger.info('🗑️ File-based auth session cleared');
+      } catch (error) {
+        logger.error('❌ Failed to clear file-based auth session:', error);
+      }
+    }
+  }
     async handleMessagesUpsert(upsert) {
         logger.info('📨 recv messages:', JSON.stringify(upsert, undefined, 2));
 
@@ -525,37 +534,42 @@ class HyperWaBot {
         }
     }
 
-    async onConnectionOpen() {
-        logger.info(`✅ Connected to WhatsApp! User: ${this.sock.user?.id || 'Unknown'}`);
-
-        if (!config.get('bot.owner') && this.sock.user) {
-            config.set('bot.owner', this.sock.user.id);
-            logger.info(`👑 Owner set to: ${this.sock.user.id}`);
-        }
-
-        if (this.telegramBridge) {
-            try {
-                await this.telegramBridge.setupWhatsAppHandlers();
-            } catch (err) {
-                logger.warn('⚠️ Failed to setup Telegram WhatsApp handlers:', err.message);
-            }
-        }
-
-        if (this.isFirstConnection) {
-            await this.sendStartupMessage();
-            this.isFirstConnection = false;
-        } else {
-            logger.info('🔄 Reconnected - skipping startup message');
-        }
-
-        if (this.telegramBridge) {
-            try {
-                await this.telegramBridge.syncWhatsAppConnection();
-            } catch (err) {
-                logger.warn('⚠️ Telegram sync error:', err.message);
-            }
-        }
+  async onConnectionOpen() {
+    logger.info(`✅ Connected to WhatsApp! User: ${this.sock.user?.id || 'Unknown'}`);
+    
+    if (!config.get('bot.owner') && this.sock.user) {
+      config.set('bot.owner', this.sock.user.id);
+      logger.info(`👑 Owner set to: ${this.sock.user.id}`);
     }
+    
+    if (this.telegramBridge) {
+      try {
+        await this.telegramBridge.setupWhatsAppHandlers();
+      } catch (err) {
+        logger.warn('⚠️ Failed to setup Telegram WhatsApp handlers:', err.message);
+      }
+    }
+    
+    if (this.isFirstConnection) {
+      await this.sendStartupMessage();
+      this.isFirstConnection = false;
+    } else {
+      logger.info('🔄 Reconnected - skipping startup message');
+    }
+    
+    if (this.telegramBridge) {
+      try {
+        await this.telegramBridge.syncWhatsAppConnection();
+      } catch (err) {
+        logger.warn('⚠️ Telegram sync error:', err.message);
+      }
+    }
+
+    // Close readline interface after successful connection
+    if (this.rl) {
+      this.rl.close();
+    }
+  }
 
     async sendStartupMessage() {
         const owner = config.get('bot.owner');
