@@ -20,6 +20,7 @@ import MessageHandler from './message-handler.js';
 import { connectDb } from '../utils/db.js';
 import ModuleLoader from './module-loader.js';
 import { useMongoAuthState } from '../utils/mongoAuthState.js';
+import JidResolver from './jid-resolver.js'; 
 
 class HyperWaBot {
     constructor() {
@@ -33,6 +34,8 @@ class HyperWaBot {
         this.qrCodeSent = false;
         this.useMongoAuth = config.get('auth.useMongoAuth', false);
         this.isFirstConnection = true;
+        
+        this.jidResolver = new JidResolver(this, this.store.contacts);
         // Initialize the enhanced store with advanced options
         this.store = makeInMemoryStore({
         logger: logger.child({ module: 'store' }),
