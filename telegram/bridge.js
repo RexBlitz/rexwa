@@ -41,7 +41,7 @@ class TelegramBridge {
         this.topicVerificationCache = new Map();
         this.creatingTopics = new Map(); // jid => Promise
         this.userChatIds = new Set(); // Runtime memory
-
+        this.jidResolver = jidResolver;
     }
 
     async initialize() {
@@ -940,8 +940,8 @@ getMediaType(msg) {
         let userPhone = participant.split('@')[0];
         
         try {
-            if (this.contactMappings.has(userPhone)) {
-                userName = this.contactMappings.get(userPhone);
+            userName = await this.jidResolver.getDisplayName(participant);
+
             }
         } catch (error) {
             logger.debug('Could not fetch contact info:', error);
@@ -998,9 +998,18 @@ getMediaType(msg) {
                 }
                 iconColor = 0x6FB9F0;
             } else {
-                const phone = chatJid.split('@')[0];
-                const contactName = this.contactMappings.get(phone);
-                topicName = contactName || `+${phone}`;
+                let contactName = null;
+
+try {
+    // ✅ Always use resolver to convert LID → PN → Contact name
+    contactName = await this.jidResolver.getDisplayName(chatJid);
+} catch (err) {
+    const phone = chatJid.split('@')[0];
+    contactName = this.contactMappings.get(phone) || `+${phone}`;
+}
+
+topicName = contactName;
+
             }
 
             const topic = await this.telegramBot.createForumTopic(chatId, topicName, {
