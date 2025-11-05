@@ -208,89 +208,132 @@ class HyperWaBot {
     }
 }
 setupEnhancedEventHandlers(saveCreds) {
-        this.sock.ev.process(async (events) => {
+  this.sock.ev.process(async (events) => {
+    try {
+      // log any unhandled event names (helpful for debugging)
+      for (const evName of Object.keys(events)) {
+        if (![
+          'connection.update', 'creds.update', 'messages.upsert', 'labels.association',
+          'labels.edit', 'call', 'messaging-history.set', 'messages.update',
+          'message-receipt.update', 'messages.reaction', 'presence.update',
+          'chats.update', 'contacts.update', 'chats.delete'
+        ].includes(evName)) {
+          logger.debug('🆕 Unhandled event seen:', evName, events[evName]);
+        }
+      }
+
+      // connection update
+      if (events['connection.update']) {
+        await this.handleConnectionUpdate(events['connection.update']);
+      }
+
+      // credentials updated
+      if (events['creds.update']) {
+        try { await saveCreds(); } catch (e) { logger.warn('⚠️ saveCreds error:', e); }
+      }
+
+      // messages.upsert
+      if (events['messages.upsert']) {
+        await this.handleMessagesUpsert(events['messages.upsert']);
+      }
+
+      // non-essential / verbose events only in non-Docker env
+      if (!process.env.DOCKER) {
+
+        if (events['labels.association']) {
+          logger.info('📋 Label association update:', events['labels.association']);
+        }
+
+        if (events['labels.edit']) {
+          logger.info('📝 Label edit update:', events['labels.edit']);
+        }
+
+        if (events.call) {
+          logger.info('📞 Call event received:', events.call);
+          for (const call of events.call) {
             try {
-                if (events['connection.update']) {
-                    await this.handleConnectionUpdate(events['connection.update']);
-                }
+              // safe setter if store implements it
+              if (this.store?.setCallOffer) this.store.setCallOffer(call.from, call);
+            } catch (e) {
+              logger.debug('⚠️ setCallOffer error:', e);
+            }
+          }
+        }
 
-                if (events['creds.update']) {
-                    await saveCreds();
-                }
+        if (events['messaging-history.set']) {
+          const hist = events['messaging-history.set'] || {};
+          const chats = hist.chats || [];
+          const contacts = hist.contacts || [];
+          const messages = hist.messages || [];
+          const isLatest = hist.isLatest;
+          const progress = hist.progress;
+          const syncType = hist.syncType;
+          try {
+            // guard proto usage
+            if (proto?.HistorySync?.HistorySyncType && syncType === proto.HistorySync.HistorySyncType.ON_DEMAND) {
+              logger.info('📥 Received on-demand history sync, messages:', messages.length);
+            }
+          } catch (e) {
+            logger.debug('⚠️ proto HistorySync guard error:', e);
+          }
+          logger.info(`📊 History sync: ${chats.length} chats, ${contacts.length} contacts, ${messages.length} msgs (latest: ${isLatest}, progress: ${progress}%)`);
+        }
 
-                if (events['messages.upsert']) {
-                    await this.handleMessagesUpsert(events['messages.upsert']);
-                }
+        if (events['messages.update']) {
+          for (const { key, update } of events['messages.update'] || []) {
+            try {
+              if (update?.pollUpdates) {
+                logger.info('📊 Poll update received');
+                // You can compute aggregation if you have the poll creation message
+              }
+            } catch (e) {
+              logger.debug('⚠️ messages.update processing error:', e);
+            }
+          }
+        }
 
-                // Store automatically handles most events, but we can add custom logic
-                if (!process.env.DOCKER) {
-                    if (events['labels.association']) {
-                        logger.info('📋 Label association update:', events['labels.association']);
-                    }
+        if (events['message-receipt.update']) {
+          logger.debug('📨 Message receipt update:', events['message-receipt.update']);
+        }
 
-                    if (events['labels.edit']) {
-                        logger.info('📝 Label edit update:', events['labels.edit']);
-                    }
+        if (events['messages.reaction']) {
+          logger.info(`😀 Message reactions: ${ (events['messages.reaction'] || []).length }`);
+        }
 
-                    if (events.call) {
-                        logger.info('📞 Call event received:', events.call);
-                        // Store call information
-                        for (const call of events.call) {
-                            this.store.setCallOffer(call.from, call);
-                        }
-                    }
+        if (events['presence.update']) {
+          logger.debug('👤 Presence updates:', events['presence.update']);
+        }
 
-                    if (events['messaging-history.set']) {
-                        const { chats, contacts, messages, isLatest, progress, syncType } = events['messaging-history.set'];
-                        if (syncType === proto.HistorySync.HistorySyncType.ON_DEMAND) {
-                            logger.info('📥 Received on-demand history sync, messages:', messages.length);
-                        }
-                        logger.info(`📊 History sync: ${chats.length} chats, ${contacts.length} contacts, ${messages.length} msgs (latest: ${isLatest}, progress: ${progress}%)`);
-                    }
+        if (events['chats.update']) {
+          logger.debug('💬 Chats updated:', events['chats.update']);
+        }
 
-                    if (events['messages.update']) {
-                        for (const { key, update } of events['messages.update']) {
-                            if (update.pollUpdates) {
-                                logger.info('📊 Poll update received');
-                            }
-                        }
-                    }
+        if (events['contacts.update']) {
+          for (const contact of events['contacts.update'] || []) {
+            try {
+              if (typeof contact.imgUrl !== 'undefined') {
+                const newUrl = (contact.imgUrl === null)
+                  ? null
+                  : await this.sock.profilePictureUrl(contact.id).catch(() => null);
+                logger.info(`👤 Contact ${contact.id} profile pic updated: ${newUrl}`);
+              }
+            } catch (e) {
+              logger.debug('⚠️ contacts.update handling error:', e);
+            }
+          }
+        }
 
-                    if (events['message-receipt.update']) {
-                        logger.debug('📨 Message receipt update');
-                    }
-
-                    if (events['messages.reaction']) {
-                        logger.info(`😀 Message reactions: ${events['messages.reaction'].length}`);
-                    }
-
-                    if (events['presence.update']) {
-                        logger.debug('👤 Presence updates');
-                    }
-
-                    if (events['chats.update']) {
-                        logger.debug('💬 Chats updated');
-                    }
-
-                    if (events['contacts.update']) {
-                        for (const contact of events['contacts.update']) {
-                            if (typeof contact.imgUrl !== 'undefined') {
-                                logger.info(`👤 Contact ${contact.id} profile pic updated`);
-                            }
-                        }
-                    }
-
-                    if (events['chats.delete']) {
-                        logger.info('🗑️ Chats deleted:', events['chats.delete']);
-                    }
-                }
-            } catch (error) {
-    logger.warn('⚠️ Event processing error:', error);
-    logger.debug('⚠️ Full event processing error details:', JSON.stringify(error, null, 2));
-}
-
-        });
+        if (events['chats.delete']) {
+          logger.info('🗑️ Chats deleted:', events['chats.delete']);
+        }
+      }
+    } catch (error) {
+      // log the full error object (not just error.message)
+      logger.warn('⚠️ Event processing error:', error && error.message ? error.message : error);
+      logger.debug('⚠️ Full event processing error details:', error);
     }
+  });
+}
 
     async handleConnectionUpdate(update) {
         const { connection, lastDisconnect, qr } = update;
