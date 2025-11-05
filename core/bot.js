@@ -75,6 +75,11 @@ class HyperWaBot {
             logger.debug(`💬 Store: ${chats.length} chats cached`);
         });
 
+        // LID mapping update listener
+        this.store.on('lid-mapping.update', (mapping) => {
+            logger.debug(`🔑 LID Mapping Update: ${Object.keys(mapping).length} mappings`);
+        });
+
         // Log store statistics periodically
         setInterval(() => {
             const stats = this.getStoreStats();
@@ -82,18 +87,6 @@ class HyperWaBot {
         }, 300000); // Every 5 minutes
     }
 
-    getStoreStats() {
-        const chatCount = Object.keys(this.store.chats).length;
-        const contactCount = Object.keys(this.store.contacts).length;
-        const messageCount = Object.values(this.store.messages)
-            .reduce((total, chatMessages) => total + Object.keys(chatMessages).length, 0);
-        
-        return {
-            chats: chatCount,
-            contacts: contactCount,
-            messages: messageCount
-        };
-    }
 
     async initialize() {
         logger.info('🔧 Initializing HyperWa Userbot with Enhanced Store...');
@@ -174,9 +167,25 @@ class HyperWaBot {
                 browser: ['HyperWa', 'Chrome', '3.0'],
             });
 
+            // 🧩 Optional Enhancements for LID Future-Proofing
+        this.sock.ev.on('lid-mapping.update', mapping => {
+       logger.info('🔄 LID mapping updated:', mapping);
+       });
+
+     this.sock.resolvePnFromLid = async (lidJid) => {
+         try {
+        const pn = await this.sock.signalRepository.lidMapping.getPNForLID(lidJid);
+        return pn || lidJid; // fallback if not found
+      } catch (err) {
+        logger.warn('⚠️ Failed to resolve PN for LID:', err.message);
+        return lidJid;
+    }
+};
+
             // CRITICAL: Bind store to socket events for data persistence
-            this.store.bind(this.sock.ev);
-            logger.info('🔗 Store bound to WhatsApp socket events');
+ 
+    this.store.bind(this.sock.ev);
+    logger.info('🔗 Store bound to socket');
 
             const connectionPromise = new Promise((resolve, reject) => {
                 const connectionTimeout = setTimeout(() => {
