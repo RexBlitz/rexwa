@@ -8,7 +8,8 @@ import makeWASocket, {
     isPnUser,
     downloadAndProcessHistorySyncNotification,
     WAMessageAddressingMode,
-    delay, 
+    delay,
+    Browsers,
     proto 
 } from '@whiskeysockets/baileys';
 import { Boom } from '@hapi/boom';
