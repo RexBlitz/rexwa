@@ -108,7 +108,7 @@ class HyperWaBot {
 
         if (config.get('telegram.enabled')) {
             try {
-                const { default: TelegramBridge } = await import('../telegram/bridge.js'); 
+                const { default: TelegramBridge } = await import('../telegram/bridge.js');
                 this.telegramBridge = new TelegramBridge(this);
                 await this.telegramBridge.initialize();
                 logger.info('✅ Telegram bridge initialized');
