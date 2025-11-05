@@ -1,8 +1,8 @@
 import TelegramBot from 'node-telegram-bot-api';
-import TelegramCommands from './commands.js';
-import config from '../config.js';
-import logger from '..cCore/logger.js';
-import { connectDb } from '../utils/db.js';
+import TelegramCommands from './commands.js'; // <-- Added .js
+import config from '../config.js';           // <-- Added .js
+import logger from '../Core/logger.js';       // <-- Added .js
+import { connectDb } from '../utils/db.js'; // <-- Added .js
 import fs from 'fs-extra';
 import path from 'path';
 import axios from 'axios';
@@ -13,8 +13,8 @@ import ffmpeg from 'fluent-ffmpeg';
 import { Sticker, StickerTypes } from 'wa-sticker-formatter';
 import { exec } from 'child_process';
 import qrcode from 'qrcode';
-import { fileURLToPath } from 'url';
 
+import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
