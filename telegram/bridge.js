@@ -263,57 +263,77 @@ async clearFilters() {
         }
     }
 
-    async syncContacts() {
-        try {
-            if (!this.whatsappBot?.sock?.user) {
-                logger.warn('⚠️ WhatsApp not connected, skipping contact sync');
-                return;
-            }
-            
-            logger.info('📞 Syncing contacts from WhatsApp...');
-            
-            const contacts = this.whatsappBot.sock.store?.contacts || {};
-            const contactEntries = Object.entries(contacts);
-            
-            logger.debug(`🔍 Found ${contactEntries.length} contacts in WhatsApp store`);
-            
-            let syncedCount = 0;
-            
-            for (const [jid, contact] of contactEntries) {
-                if (!jid || jid === 'status@broadcast' || !contact) continue;
-                
-                const phone = jid.split('@')[0];
-                let contactName = null;
-                
-                // Extract name from contact - prioritize saved contact name
-                if (contact.name && contact.name !== phone && !contact.name.startsWith('+') && contact.name.length > 2) {
-                    contactName = contact.name;
-                } else if (contact.notify && contact.notify !== phone && !contact.notify.startsWith('+') && contact.notify.length > 2) {
-                    contactName = contact.notify;
-                } else if (contact.verifiedName && contact.verifiedName !== phone && contact.verifiedName.length > 2) {
-                    contactName = contact.verifiedName;
-                }
-                
-                if (contactName) {
-                    const existingName = this.contactMappings.get(phone);
-                    if (existingName !== contactName) {
-                        await this.saveContactMapping(phone, contactName);
-                        syncedCount++;
-                        logger.debug(`📞 Synced contact: ${phone} -> ${contactName}`);
-                    }
-                }
-            }
-            
-            logger.info(`✅ Synced ${syncedCount} new/updated contacts (Total: ${this.contactMappings.size})`);
-            
-            if (syncedCount > 0) {
-                await this.updateTopicNames();
-            }
-            
-        } catch (error) {
-            logger.error('❌ Failed to sync contacts:', error);
+  async syncContacts() {
+    try {
+        if (!this.whatsappBot?.sock?.user) {
+            logger.warn('⚠️ WhatsApp not connected, skipping contact sync');
+            return;
         }
+        
+        logger.info('📞 Syncing contacts from WhatsApp...');
+        
+        const contacts = this.whatsappBot.sock.store?.contacts || {};
+        const contactEntries = Object.entries(contacts);
+        
+        logger.debug(`🔍 Found ${contactEntries.length} contacts in WhatsApp store`);
+        
+        let syncedCount = 0;
+        
+        for (const [jid, contact] of contactEntries) {
+            if (!jid || jid === 'status@broadcast' || !contact) continue;
+            
+            // 🔥 FIX: Handle both LID and PN contacts
+            let phone;
+            
+            if (jid.includes(':')) {
+                // It's a LID, try to get PN
+                try {
+                    const pnJid = await this.whatsappBot.sock.signalRepository.lidMapping.getPNForLID(jid);
+                    if (pnJid) {
+                        phone = pnJid.split('@')[0];
+                    }
+                } catch (error) {
+                    logger.debug(`Could not get PN for LID ${jid}:`, error);
+                    continue; // Skip if we can't get phone number
+                }
+            } else {
+                // Regular PN JID
+                phone = jid.split('@')[0];
+            }
+            
+            if (!phone) continue;
+            
+            let contactName = null;
+            
+            // Extract name from contact - prioritize saved contact name
+            if (contact.name && contact.name !== phone && !contact.name.startsWith('+') && contact.name.length > 2) {
+                contactName = contact.name;
+            } else if (contact.notify && contact.notify !== phone && !contact.notify.startsWith('+') && contact.notify.length > 2) {
+                contactName = contact.notify;
+            } else if (contact.verifiedName && contact.verifiedName !== phone && contact.verifiedName.length > 2) {
+                contactName = contact.verifiedName;
+            }
+            
+            if (contactName) {
+                const existingName = this.contactMappings.get(phone);
+                if (existingName !== contactName) {
+                    await this.saveContactMapping(phone, contactName);
+                    syncedCount++;
+                    logger.debug(`📞 Synced contact: ${phone} -> ${contactName}`);
+                }
+            }
+        }
+        
+        logger.info(`✅ Synced ${syncedCount} new/updated contacts (Total: ${this.contactMappings.size})`);
+        
+        if (syncedCount > 0) {
+            await this.updateTopicNames();
+        }
+        
+    } catch (error) {
+        logger.error('❌ Failed to sync contacts:', error);
     }
+}
 
     async updateTopicNames() {
         try {
@@ -928,17 +948,44 @@ getMediaType(msg) {
     }
 
 
-    async createUserMapping(participant, whatsappMsg) {
-        if (this.userMappings.has(participant)) {
-            const userData = this.userMappings.get(participant);
-            userData.messageCount = (userData.messageCount || 0) + 1;
-            await this.saveUserMapping(participant, userData);
-            return;
-        }
+async createUserMapping(participant, whatsappMsg) {
+    if (this.userMappings.has(participant)) {
+        const userData = this.userMappings.get(participant);
+        userData.messageCount = (userData.messageCount || 0) + 1;
+        await this.saveUserMapping(participant, userData);
+        return;
+    }
 
-        let userName = null;
-        let userPhone = participant.split('@')[0];
+    let userName = null;
+    let userPhone = null;
+    
+    // 🔥 FIX: Handle LID participant
+    if (participant.includes(':')) {
+        // It's a LID
+        try {
+            const pnJid = await this.whatsappBot.sock.signalRepository.lidMapping.getPNForLID(participant);
+            if (pnJid) {
+                userPhone = pnJid.split('@')[0];
+                logger.debug(`🔄 Converted participant LID to PN: ${userPhone}`);
+            }
+        } catch (error) {
+            logger.debug('Could not convert LID to PN for user mapping:', error);
+        }
         
+        // Try to get name from store
+        const contact = this.whatsappBot.store?.contacts?.[participant];
+        if (contact?.name && contact.name.length > 2) {
+            userName = contact.name;
+        } else if (contact?.notify && contact.notify.length > 2) {
+            userName = contact.notify;
+        }
+    } else {
+        // Regular PN JID
+        userPhone = participant.split('@')[0];
+    }
+    
+    // Try to get contact name if we have phone number
+    if (userPhone && !userName) {
         try {
             if (this.contactMappings.has(userPhone)) {
                 userName = this.contactMappings.get(userPhone);
@@ -946,25 +993,25 @@ getMediaType(msg) {
         } catch (error) {
             logger.debug('Could not fetch contact info:', error);
         }
-
-        const userData = {
-            name: userName,
-            phone: userPhone,
-            firstSeen: new Date(),
-            messageCount: 1
-        };
-
-        await this.saveUserMapping(participant, userData);
-        logger.debug(`👤 Created user mapping: ${userName || userPhone} (${userPhone})`);
     }
 
-   async getOrCreateTopic(chatJid, whatsappMsg) {
-    // ✅ If topic already cached, return
+    const userData = {
+        name: userName,
+        phone: userPhone,
+        firstSeen: new Date(),
+        messageCount: 1
+    };
+
+    await this.saveUserMapping(participant, userData);
+    logger.debug(`👤 Created user mapping: ${userName || userPhone || participant.substring(0, 12)} (${userPhone || 'no PN'})`);
+}
+
+
+  async getOrCreateTopic(chatJid, whatsappMsg) {
     if (this.chatMappings.has(chatJid)) {
         return this.chatMappings.get(chatJid);
     }
 
-    // ✅ If another creation is in progress, wait for it
     if (this.creatingTopics.has(chatJid)) {
         return await this.creatingTopics.get(chatJid);
     }
@@ -998,9 +1045,50 @@ getMediaType(msg) {
                 }
                 iconColor = 0x6FB9F0;
             } else {
-                const phone = chatJid.split('@')[0];
-                const contactName = this.contactMappings.get(phone);
-                topicName = contactName || `+${phone}`;
+                // 🔥 FIX: Handle LID vs PN properly
+                let phone;
+                
+                // Check if this is a LID (contains ':' which LIDs have)
+                if (chatJid.includes(':')) {
+                    // It's a LID, try to get the PN mapping
+                    try {
+                        const pnJid = await this.whatsappBot.sock.signalRepository.lidMapping.getPNForLID(chatJid);
+                        if (pnJid) {
+                            phone = pnJid.split('@')[0];
+                            logger.debug(`🔄 Converted LID ${chatJid} to PN ${phone}`);
+                        } else {
+                            // No PN found, try to get contact info from store
+                            logger.warn(`⚠️ No PN found for LID: ${chatJid}`);
+                            
+                            const contact = this.whatsappBot.store?.contacts?.[chatJid];
+                            if (contact?.name && contact.name !== chatJid && contact.name.length > 2) {
+                                topicName = contact.name;
+                                logger.debug(`📛 Using contact name for LID: ${topicName}`);
+                            } else if (contact?.notify && contact.notify !== chatJid && contact.notify.length > 2) {
+                                topicName = contact.notify;
+                                logger.debug(`📛 Using notify name for LID: ${topicName}`);
+                            } else {
+                                // Last resort: use shortened LID
+                                topicName = `User_${chatJid.split(':')[0].substring(0, 8)}`;
+                                logger.debug(`📛 Using shortened LID as topic name: ${topicName}`);
+                            }
+                        }
+                    } catch (error) {
+                        logger.error('❌ Error converting LID to PN:', error);
+                        // Fallback to contact name from store
+                        const contact = this.whatsappBot.store?.contacts?.[chatJid];
+                        topicName = contact?.name || contact?.notify || `User_${chatJid.split(':')[0].substring(0, 8)}`;
+                    }
+                } else {
+                    // It's a regular PN JID
+                    phone = chatJid.split('@')[0];
+                }
+                
+                // If we got a phone number, try to find contact name
+                if (phone && !topicName) {
+                    const contactName = this.contactMappings.get(phone);
+                    topicName = contactName || `+${phone}`;
+                }
             }
 
             const topic = await this.telegramBot.createForumTopic(chatId, topicName, {
@@ -1027,7 +1115,7 @@ getMediaType(msg) {
             logger.error('❌ Failed to create Telegram topic:', error);
             return null;
         } finally {
-            this.creatingTopics.delete(chatJid); // ✅ Cleanup after done
+            this.creatingTopics.delete(chatJid);
         }
     })();
 
