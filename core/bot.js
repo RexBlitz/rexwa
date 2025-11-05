@@ -285,8 +285,10 @@ setupEnhancedEventHandlers(saveCreds) {
                     }
                 }
             } catch (error) {
-                logger.warn('⚠️ Event processing error:', error.message);
-            }
+    logger.warn('⚠️ Event processing error:', error);
+    logger.debug('⚠️ Full event processing error details:', JSON.stringify(error, null, 2));
+}
+
         });
     }
 
