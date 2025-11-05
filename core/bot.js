@@ -70,17 +70,6 @@ class HyperWaBot {
         this.store.on('chats.upsert', (chats) => {
             logger.debug(`💬 Store: ${chats.length} chats cached`);
         });
-
-        // LID mapping update listener
-        this.store.on('lid-mapping.update', (mapping) => {
-            logger.debug(`🔑 LID Mapping Update: ${Object.keys(mapping).length} mappings`);
-        });
-
-        // Log store statistics periodically
-        setInterval(() => {
-            const stats = this.getStoreStats();
-            logger.info(`📊 Store Stats - Chats: ${stats.chats}, Contacts: ${stats.contacts}, Messages: ${stats.messages}`);
-        }, 300000); // Every 5 minutes
     }
 
 
