@@ -139,33 +139,20 @@ class HyperWaBot {
 
         try {
             this.sock = makeWASocket({
-    auth: {
-        creds: state.creds,
-        keys: makeCacheableSignalKeyStore(state.keys, logger.child({ module: 'signal-keys' })),
-    },
-    version,
-    printQRInTerminal: false,
-    logger: logger.child({ module: 'baileys' }),
-    msgRetryCounterCache: this.msgRetryCounterCache,
-    generateHighQualityLinkPreview: true,
-    getMessage: this.getMessage.bind(this),
-    browser: ['HyperWa', 'Chrome', '3.0'],
-});
-
-// 🧩 Optional Enhancements for LID Future-Proofing
-this.sock.ev.on('lid-mapping.update', mapping => {
-    logger.info('🔄 LID mapping updated:', mapping);
-});
-
-this.sock.resolvePnFromLid = async (lidJid) => {
-    try {
-        const pn = await this.sock.signalRepository.lidMapping.getPNForLID(lidJid);
-        return pn || lidJid; // fallback if not found
-    } catch (err) {
-        logger.warn('⚠️ Failed to resolve PN for LID:', err.message);
-        return lidJid;
-    }
-};
+        auth: {
+            creds: state.creds,
+            keys: makeCacheableSignalKeyStore(state.keys, logger.child({ module: 'keys' })),
+        },
+        version,
+        logger: logger.child({ module: 'baileys' }),
+        msgRetryCounterCache: this.msgRetryCounterCache,
+        generateHighQualityLinkPreview: true,
+        getMessage: this.getMessage.bind(this), 
+        browser: ['HyperWa', 'Chrome', '3.0'],
+        markOnlineOnConnect: false ,
+        firewall: true,
+        printQRInTerminal: false
+    });
 
     // ✅ CRITICAL: Bind store to socket events
     this.store.bind(this.sock.ev);
