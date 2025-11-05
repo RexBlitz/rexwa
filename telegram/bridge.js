@@ -199,7 +199,82 @@ async clearFilters() {
     await this.collection.deleteMany({ type: 'filter' });
 }
 
+async getUserInfo(jid) {
+        if (!this.whatsappBot?.sock) {
+            throw new Error('WhatsApp is not connected.');
+        }
 
+        logger.info(`🔍 Fetching metadata for JID: ${jid}`);
+        const info = {};
+        
+        // --- NEW LOGIC ---
+        // Get the LID/PN mapping store
+        const lidStore = this.whatsappBot.sock.signalRepository.lidMapping;
+        const pn = jid.split('@')[0]; // Get the phone number part (e.g., "1234567890")
+        // --- END NEW LOGIC ---
+
+        try {
+            // --- NEW: Fetch LID/PN Mapping ---
+            try {
+                // Get the LID JID from the Phone Number (PN)
+                const lid = await lidStore.getLIDForPN(pn);
+                info.lid_jid = lid || 'No LID found in store';
+
+                // If we found a LID, try to reverse-lookup the PN for verification
+                if (lid && lid.includes('@lid')) {
+                    const pnFromLid = await lidStore.getPNForLID(lid);
+                    info.pn_from_lid_store = pnFromLid || 'No PN found for this LID';
+                }
+            } catch (e) {
+                info.lid_mapping_error = e.message;
+            }
+            // --- END NEW LID/PN LOGIC ---
+
+
+            // 1. Check if user (PN JID) exists on WhatsApp
+            const onWhatsApp = await this.whatsappBot.sock.onWhatsApp(jid);
+            info.onWhatsApp_PN = onWhatsApp?.[0] || { exists: false, jid: jid };
+            
+            // 2. Get data from Baileys' local store (by PN JID)
+            info.storeContact_PN = this.whatsappBot.sock.store.contacts[jid] || 'Not in local store (by PN)';
+            
+            // --- NEW: Also get contact by LID JID if we found one ---
+            if (info.lid_jid && info.lid_jid.includes('@lid')) {
+                info.storeContact_LID = this.whatsappBot.sock.store.contacts[info.lid_jid] || 'Not in local store (by LID)';
+            }
+
+            // 3. Get data from our bridge's contact mapping
+            info.bridgeContact = this.contactMappings.get(pn) || 'Not in bridge contacts';
+
+            // 4. Fetch live status (About)
+            try {
+                info.status = await this.whatsappBot.sock.fetchStatus(jid);
+            } catch (e) {
+                info.status = { error: e.message };
+            }
+            
+            // 5. Fetch profile picture URL
+            try {
+                info.profilePicUrl = await this.whatsappBot.sock.profilePictureUrl(jid, 'image');
+            } catch (e) {
+                info.profilePicUrl = { error: e.message };
+            }
+            
+            // 6. Check blocklist
+            try {
+                const blocklist = await this.whatsappBot.sock.fetchBlocklist();
+                info.isBlocked = blocklist.includes(jid);
+            } catch (e) {
+                info.isBlocked = { error: e.message };
+            }
+            
+            return info;
+
+        } catch (error) {
+            logger.error(`❌ Failed to get user info for ${jid}:`, error);
+            throw new Error(`Failed to fetch info: ${error.message}`);
+        }
+    }
     async updateProfilePicUrl(whatsappJid, profilePicUrl) {
         try {
             await this.collection.updateOne(
