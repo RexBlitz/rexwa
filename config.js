@@ -12,7 +12,7 @@ class Config {
 
             auth: {
                 usePairingCode: true,
-                PhoneNumber: 923075417411 ,
+                phoneNumber: 923075417411 ,
                 useMongoAuth: true,
                 clearAuthOnStart: false
             },
