@@ -6,6 +6,7 @@ import makeWASocket, {
     getAggregateVotesInPollMessage, 
     isJidNewsletter, 
     delay, 
+    isPnUser,
     proto 
 } from '@whiskeysockets/baileys';
 import qrcode from 'qrcode-terminal';
