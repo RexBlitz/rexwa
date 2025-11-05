@@ -104,53 +104,27 @@ class TelegramBridge {
  */
 subscribeLidMappingUpdates() {
     try {
-        const store = this.whatsappBot?.sock?.signalRepository?.lidMapping;
+        const store = this.whatsappBot?.store;
         if (!store || typeof store.on !== 'function') return;
 
         store.on('lid-mapping.update', async (mapping) => {
             try {
                 for (const [lid, pn] of Object.entries(mapping || {})) {
-                    // Update all database entries with new mappings
                     await this.collection.updateMany(
-                        { 
-                            $or: [
-                                { type: 'chat', 'data.whatsappLid': lid },
-                                { type: 'chat', 'data.whatsappPn': pn }
-                            ]
-                        },
-                        { 
-                            $set: { 
-                                'data.whatsappPn': pn,
-                                'data.whatsappLid': lid,
-                                'data.updatedAt': new Date() 
-                            } 
-                        }
+                        { type: 'chat', 'data.whatsappLid': lid },
+                        { $set: { 'data.whatsappPn': pn, 'data.updatedAt': new Date() } }
                     );
 
-                    // Update user mappings
                     await this.collection.updateMany(
-                        { 
-                            $or: [
-                                { type: 'user', 'data.lid': lid },
-                                { type: 'user', 'data.phone': pn }
-                            ]
-                        },
-                        { 
-                            $set: { 
-                                'data.phone': pn,
-                                'data.lid': lid,
-                                'data.updatedAt': new Date() 
-                            } 
-                        }
+                        { type: 'chat', 'data.whatsappPn': pn, 'data.whatsappLid': { $exists: false } },
+                        { $set: { 'data.whatsappLid': lid, 'data.updatedAt': new Date() } }
                     );
 
                     logger.debug(`🔁 Updated LID mapping ${lid} ↔ ${pn}`);
                 }
 
-                // Refresh all cached data
-                await this.loadMappingsFromDb();
+                await this.syncContacts();
                 await this.updateTopicNames();
-                
             } catch (err) {
                 logger.debug('Error handling lid-mapping.update:', err.message);
             }
@@ -197,20 +171,46 @@ subscribeLidMappingUpdates() {
 
     async saveChatMapping(whatsappJid, telegramTopicId, profilePicUrl = null) {
     try {
-        const contactInfo = await this.getContactInfo(whatsappJid);
-        
+        let whatsappPn = null;
+        let whatsappLid = null;
+
+        if (whatsappJid) {
+            const prefix = whatsappJid.split('@')[0];
+            const isGroupOrSpecial = whatsappJid.endsWith('@g.us') || whatsappJid.includes('broadcast');
+
+            if (!isGroupOrSpecial) {
+                const lidMapping = this.whatsappBot.sock?.signalRepository?.lidMapping;
+                if (lidMapping) {
+                    try {
+                        // Try PN→LID
+                        if (/^\\d+$/.test(prefix)) {
+                            whatsappPn = prefix;
+                            const lid = await lidMapping.getLIDForPN(prefix);
+                            if (lid) whatsappLid = lid;
+                        } else {
+                            // Likely LID
+                            whatsappLid = prefix;
+                            const pn = await lidMapping.getPNForLID(prefix);
+                            if (pn) whatsappPn = pn;
+                        }
+                    } catch (err) {
+                        logger.debug('Mapping lookup failed in saveChatMapping:', err.message);
+                    }
+                }
+            }
+        }
+
         const updateData = {
             type: 'chat',
             data: {
                 whatsappJid,
-                whatsappPn: contactInfo.phone,
-                whatsappLid: contactInfo.lid,
+                whatsappPn,
+                whatsappLid,
                 telegramTopicId,
                 createdAt: new Date(),
                 lastActivity: new Date(),
             },
         };
-        
         if (profilePicUrl) updateData.data.profilePicUrl = profilePicUrl;
 
         await this.collection.updateOne(
@@ -226,6 +226,8 @@ subscribeLidMappingUpdates() {
         logger.error('❌ Failed to save chat mapping:', error);
     }
 }
+
+    
    async loadUserChatIds() {
     try {
         const users = await this.collection.find({ type: 'userChat' }).toArray();
@@ -326,7 +328,7 @@ async clearFilters() {
     }
 
 
-    async syncContacts() {
+async syncContacts() {
     try {
         if (!this.whatsappBot?.sock?.user) {
             logger.warn('⚠️ WhatsApp not connected, skipping contact sync');
@@ -340,35 +342,89 @@ async clearFilters() {
         
         logger.debug(`🔍 Found ${contactEntries.length} contacts in WhatsApp store`);
         
+        if (contactEntries.length === 0) {
+            logger.warn('⚠️ No contacts found in store - may need to wait for sync');
+            return;
+        }
+        
         let syncedCount = 0;
         
         for (const [jid, contact] of contactEntries) {
+            // Skip broadcast and invalid contacts
             if (!jid || jid === 'status@broadcast' || !contact) continue;
             
-            // NEW: Use the correct Contact type structure
-            const phone = contact.phoneNumber ? contact.phoneNumber.replace(/^\+/, '') : null;
-            const lid = contact.lid || null;
-            const contactName = contact.name || null;
+            // Extract phone number - NEW: direct phoneNumber field (LID update)
+            let phone = null;
             
-            // Only save if we have valid contact information
-            if (contactName && (phone || lid)) {
-                const existing = await this.collection.findOne({
-                    $or: [
-                        { type: 'contact', 'data.phone': phone },
-                        { type: 'contact', 'data.lid': lid }
-                    ]
-                });
-                
-                if (!existing || existing.data.name !== contactName) {
-                    await this.saveContactMapping(phone, lid, contactName);
-                    syncedCount++;
-                    logger.info(`📞 Saved contact: ${contactName} (PN: ${phone}, LID: ${lid})`);
+            if (contact.phoneNumber) {
+                // New LID system: phoneNumber is already clean (no @domain)
+                phone = contact.phoneNumber.replace(/^\+/, '');
+            } else if (contact.id) {
+                // Fallback: extract from ID
+                const idPrefix = contact.id.split('@')[0];
+                // Only use if it looks like a phone number (all digits)
+                if (/^\d+$/.test(idPrefix)) {
+                    phone = idPrefix.replace(/^\+/, '');
                 }
+            } else {
+                // Last resort: use JID
+                const jidPrefix = jid.split('@')[0];
+                if (/^\d+$/.test(jidPrefix)) {
+                    phone = jidPrefix.replace(/^\+/, '');
+                }
+            }
+            
+            // Skip if we couldn't extract a valid phone number
+            if (!phone) {
+                logger.debug(`⚠️ Skipping ${jid} - no valid phone number found`);
+                continue;
+            }
+            
+            // Extract contact name - prioritize saved name
+            let contactName = null;
+            
+            // Check contact.name (saved contact name)
+            if (contact.name && 
+                contact.name !== phone && 
+                !contact.name.startsWith('+') && 
+                !/^\d+$/.test(contact.name) && // Not just digits
+                contact.name.trim().length > 0) {
+                contactName = contact.name.trim();
+            }
+            // Check verifiedName (business accounts)
+            else if (contact.verifiedName && 
+                     contact.verifiedName !== phone && 
+                     !/^\d+$/.test(contact.verifiedName) &&
+                     contact.verifiedName.trim().length > 0) {
+                contactName = contact.verifiedName.trim();
+            }
+            // Check notify (handle name) - last resort
+            else if (contact.notify && 
+                     contact.notify !== phone && 
+                     !contact.notify.startsWith('+') &&
+                     !/^\d+$/.test(contact.notify) &&
+                     contact.notify.trim().length > 0) {
+                contactName = contact.notify.trim();
+            }
+            
+            // Only save if we have a valid contact name
+            if (contactName) {
+                const existingName = this.contactMappings.get(phone);
+                
+                // Save if new or changed
+                if (existingName !== contactName) {
+                    await this.saveContactMapping(phone, contactName);
+                    syncedCount++;
+                    logger.info(`📞 Saved contact: ${phone} -> "${contactName}" (JID: ${jid})`);
+                }
+            } else {
+                logger.debug(`⚠️ No valid name for ${phone} (JID: ${jid})`);
             }
         }
         
-        logger.info(`✅ Synced ${syncedCount} new/updated contacts`);
+        logger.info(`✅ Synced ${syncedCount} new/updated contacts (Total: ${this.contactMappings.size})`);
         
+        // Update topic names if contacts were synced
         if (syncedCount > 0) {
             await this.updateTopicNames();
         }
@@ -377,51 +433,37 @@ async clearFilters() {
         logger.error('❌ Failed to sync contacts:', error);
     }
 }
-    
-async getContactInfo(jid) {
-    if (!jid) return { phone: null, lid: null, name: null };
-    
-    try {
-        const contact = this.whatsappBot.store?.contacts?.[jid];
-        
-        if (!contact) {
-            logger.debug(`🔍 No contact found for JID: ${jid}`);
-            // For status messages, try to extract from JID
-            const prefix = jid.split('@')[0];
-            return { 
-                phone: /^\d+$/.test(prefix) ? prefix : null, 
-                lid: prefix, 
-                name: null 
-            };
-        }
-        
-        // Use the correct Contact type structure
-        let phone = contact.phoneNumber ? contact.phoneNumber.replace(/^\+/, '') : null;
-        let lid = contact.lid || null;
-        let name = contact.name || contact.notify || null;
-        
-        // Try LID/PN mapping if we have partial info
-        try {
-            const mapping = this.whatsappBot.sock?.signalRepository?.lidMapping;
-            if (mapping) {
-                if (lid && !phone) {
-                    phone = await mapping.getPNForLID(lid);
-                } else if (phone && !lid) {
-                    lid = await mapping.getLIDForPN(phone);
-                }
-            }
-        } catch (mappingError) {
-            logger.debug('LID mapping lookup failed:', mappingError.message);
-        }
-        
-        return { phone, lid, name };
-        
-    } catch (error) {
-        logger.error('❌ Error in getContactInfo:', error);
-        return { phone: null, lid: null, name: null };
+
+/**
+ * Fixed getPhoneNumberFromJid() - Uses correct store path
+ */
+async getPhoneNumberFromJid(jid) {
+    if (!jid || jid.includes('broadcast')) {
+        return jid.split('@')[0] || jid;
     }
-}
     
+    // ✅ FIX: Read from this.whatsappBot.store.contacts (not sock.store)
+    const contact = this.whatsappBot.store?.contacts?.[jid];
+    if (contact) {
+        // NEW: phoneNumber field is already clean (no @domain)
+        if (contact.phoneNumber) {
+            return contact.phoneNumber.replace(/^\+/, '');
+        }
+        
+        // Fallback: extract from ID
+        if (contact.id) {
+            const prefix = contact.id.split('@')[0];
+            if (/^\d+$/.test(prefix)) {
+                return prefix.replace(/^\+/, '');
+            }
+            return prefix;
+        }
+    }
+
+    // Extract from JID directly
+    const prefix = jid.split('@')[0];
+    return prefix.replace(/^\+/, '');
+}
 // ============================================================================
 
 async updateTopicNames() {
@@ -758,24 +800,18 @@ async sendStartMessage() {
         }
     }
 
-async syncMessage(whatsappMsg, text) {
+    async syncMessage(whatsappMsg, text) {
     if (!this.telegramBot || !config.get('telegram.enabled')) return;
 
     const sender = whatsappMsg.key.remoteJid;
-    
-    // NEW: Use participantAlt when available for PN
-    const participant = whatsappMsg.key.participant;
-    const participantAlt = whatsappMsg.key.participantAlt; // This is the PN if participant is LID
-    
+    // participant will be LID or PN, or the group JID if from a group
+    const participant = whatsappMsg.key.participant || sender; 
     const isFromMe = whatsappMsg.key.fromMe;
     
     if (sender === 'status@broadcast') {
         await this.handleStatusMessage(whatsappMsg, text);
         return;
     }
-    
-    // Get contact info using new method
-    const contactInfo = await this.getContactInfo(participant);
     
     if (isFromMe) {
         const existingTopicId = this.chatMappings.get(sender);
@@ -785,8 +821,8 @@ async syncMessage(whatsappMsg, text) {
         return;
     }
     
-    // Ensure user mapping uses proper contact info
-    await this.createUserMapping(participant, whatsappMsg, contactInfo);
+    // Ensure user mapping uses the participant JID (PN or LID)
+    await this.createUserMapping(participant, whatsappMsg);
     const topicId = await this.getOrCreateTopic(sender, whatsappMsg);
     
     if (whatsappMsg.message?.ptvMessage || (whatsappMsg.message?.videoMessage?.ptv)) {
@@ -826,16 +862,11 @@ async handleStatusMessage(whatsappMsg, text) {
     try {
         if (!config.get('telegram.features.statusSync')) return;
         
-        // FIX: Handle missing participant
         const participant = whatsappMsg.key.participant;
-        if (!participant) {
-            logger.warn('⚠️ Status message missing participant, skipping');
-            return;
-        }
         
-        const contactInfo = await this.getContactInfo(participant);
-        const phone = contactInfo.phone || participant.split('@')[0];
-        const contactName = contactInfo.name || this.contactMappings.get(phone) || `+${phone}`;
+        // ✅ AWAIT the phone number retrieval (THIS WAS MISSING!)
+        const phone = await this.getPhoneNumberFromJid(participant);
+        const contactName = this.contactMappings.get(phone) || `+${phone}`;
         
         const topicId = await this.getOrCreateTopic('status@broadcast', whatsappMsg);
         if (!topicId) return;
@@ -1053,11 +1084,7 @@ getMediaType(msg) {
     }
 
 
-async createUserMapping(participant, whatsappMsg, contactInfo = null) {
-    if (!contactInfo) {
-        contactInfo = await this.getContactInfo(participant);
-    }
-    
+   async createUserMapping(participant, whatsappMsg) {
     if (this.userMappings.has(participant)) {
         const userData = this.userMappings.get(participant);
         userData.messageCount = (userData.messageCount || 0) + 1;
@@ -1065,17 +1092,24 @@ async createUserMapping(participant, whatsappMsg, contactInfo = null) {
         return;
     }
 
+    const phone = await this.getPhoneNumberFromJid(participant);
+    const name = this.contactMappings.get(phone);
+    const lid = participant.split('@')[0];
+
     const userData = {
-        name: contactInfo.name || null,
-        phone: contactInfo.phone || null,
-        lid: contactInfo.lid || null,
+        name: name || null,
+        phone: phone || null,
+        lid: lid || null,
         firstSeen: new Date(),
         messageCount: 1,
     };
 
     await this.saveUserMapping(participant, userData);
-    logger.debug(`👤 Created user mapping: ${userData.name || userData.phone || userData.lid}`);
+    logger.debug(`👤 Created user mapping: ${name || phone} (${phone})`);
 }
+
+
+
 
 /**
  * Creates or retrieves a Telegram topic for a given WhatsApp chat.
@@ -1114,25 +1148,23 @@ async getOrCreateTopic(chatJid, whatsappMsg) {
                     topicName = 'Group Chat';
                 }
                 iconColor = 0x6FB9F0;
-              } else {
-        // 👇 UPDATED — Use new contact info method
-        const contactInfo = await this.getContactInfo(chatJid);
-        
-        let displayName = 'Unknown Contact';
-        
-        // Priority: Contact name → Phone → LID (as last resort)
-        if (contactInfo.name) {
-            displayName = contactInfo.name;
-        } else if (contactInfo.phone) {
-            displayName = `+${contactInfo.phone}`;
-        } else if (contactInfo.lid) {
-            // Only show LID if we have nothing else
-            displayName = `User ${contactInfo.lid.substring(0, 8)}...`;
-        }
-        
-        topicName = displayName;
-    }
-    
+            } else {
+                // 👇 NEW — Safe name resolution (Contact name → PN → fallback)
+                let phone = await this.getPhoneNumberFromJid(chatJid);
+                let contactName = this.contactMappings.get(phone);
+
+                // If name is missing, try to refetch contact info
+                if (!contactName && this.whatsappBot.store?.contacts?.[chatJid]) {
+                    const contact = this.whatsappBot.store.contacts[chatJid];
+                    if (contact.name) contactName = contact.name;
+                    else if (contact.notify) contactName = contact.notify;
+                }
+
+                // Fallback to phone if available, else minimal fallback
+                if (contactName) topicName = contactName;
+                else if (phone) topicName = `+${phone}`;
+                else topicName = 'Unknown Contact';
+            }
 
             const topic = await this.telegramBot.createForumTopic(chatId, topicName, { icon_color: iconColor });
             let profilePicUrl = null;
