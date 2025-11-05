@@ -719,14 +719,37 @@ class HyperWaBot {
     return this.sock;
   }
 
-  async sendMessage(jid, content) {
-    if (!this.sock) {
-      throw new Error('WhatsApp socket not initialized');
+async sendMessage(jid, content, options = {}) {
+  if (!this.sock) throw new Error('WhatsApp socket not initialized');
+
+  // Normalize JID
+  let targetJid = jid;
+
+  if (typeof jid === 'object') {
+    if (jid?.key?.remoteJid) targetJid = jid.key.remoteJid;
+    else if (jid?.jid) targetJid = jid.jid;
+    else if (jid?.id) targetJid = jid.id;
+    else {
+      logger.error('❌ Invalid JID object passed to sendMessage:', jid);
+      return;
     }
-    
-    const preferredJid = this.getPreferredJID(jid);
-    return await this.sock.sendMessage(preferredJid, content);
   }
+
+  if (typeof targetJid !== 'string') {
+    logger.error('❌ Invalid JID type in sendMessage:', typeof targetJid, targetJid);
+    return;
+  }
+
+  const preferredJid = this.getPreferredJID(targetJid);
+
+  try {
+    const res = await this.sock.sendMessage(preferredJid, content, options);
+    return res;
+  } catch (err) {
+    logger.error('❌ Failed to send message:', err.message);
+  }
+}
+
 
   async shutdown() {
     logger.info('🛑 Shutting down HyperWa Userbot...');
