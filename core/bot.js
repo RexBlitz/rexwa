@@ -137,7 +137,7 @@ class HyperWaBot {
         logger.info('✅ HyperWa Userbot with Enhanced Store initialized successfully!');
     }
 
-  async startWhatsApp() {
+async startWhatsApp() {
         let state, saveCreds;
 
         // Clean up existing socket if present
@@ -187,50 +187,9 @@ class HyperWaBot {
             this.store.bind(this.sock.ev);
             logger.info('🔗 Store bound to socket');
 
-            // 
-            // =================================================================
-            // ✅ NEW PAIRING CODE LOGIC
-            // =================================================================
-            //
-            const usePairingCode = config.get('auth.usePairingCode', false);
-            // We check if pairing code is enabled AND if the bot is not yet registered
-            if (usePairingCode && !this.sock.authState.creds.registered) {
-                const phoneNumber = config.get('auth.pairingPhoneNumber', null);
-                
-                if (!phoneNumber) {
-                    logger.error('❌ Pairing code is enabled, but "auth.pairingPhoneNumber" is not set in config.');
-                    logger.error('❌ Please add your phone number (with country code) to the config file.');
-                    process.exit(1); // Exit because we can't proceed
-                }
-                
-                logger.info(`📞 Requesting pairing code for phone number: ${phoneNumber}`);
-                try {
-                    const code = await this.sock.requestPairingCode(phoneNumber);
-                    // Format the 8-digit code as XXXX-XXXX for easy reading
-                    const formattedCode = code.slice(0, 4) + '-' + code.slice(4);
-                    
-                    logger.info('=========================================');
-                    logger.info(`   Your Pairing Code: ${formattedCode}   `);
-                    logger.info('=========================================');
-                    
-                    // Also send to Telegram if the bridge is set up
-                    if (this.telegramBridge) {
-                        await this.telegramBridge.logToTelegram('📱 Pairing Code', `Your Pairing Code: ${formattedCode}`);
-                    }
-
-                } catch (error) {
-                    logger.error('❌ Failed to request pairing code:', error.message);
-                    logger.error('❌ Please ensure the phone number is correct and includes the country code (e.g., 923001234567).');
-                    process.exit(1);
-                }
-            }
-            // =================================================================
-            // END OF NEW PAIRING CODE LOGIC
-            // =================================================================
-            //
 
             const connectionPromise = new Promise((resolve, reject) => {
-                // Set a 3-minute timeout for pairing code, 30s is too short
+                // Set a 3-minute timeout for pairing code
                 const connectionTimeout = setTimeout(() => {
                     if (!this.sock.user) {
                         logger.warn('❌ Connection timed out after 3 minutes (waiting for pairing code or QR scan)');
@@ -241,18 +200,63 @@ class HyperWaBot {
                     }
                 }, 30000); // 3 minutes
 
-                this.sock.ev.on('connection.update', update => {
+                // =================================================================
+                // ✅ MOVED PAIRING/QR LOGIC INSIDE THE EVENT LISTENER
+                // =================================================================
+                this.sock.ev.on('connection.update', async (update) => {
+                    const { connection, qr } = update;
+
                     // Only resolve on 'open'
-                    if (update.connection === 'open') {
+                    if (connection === 'open') {
                         clearTimeout(connectionTimeout);
                         resolve();
+                        return; // Stop processing this event
                     }
-                    // If we get a QR, and pairing code is OFF, log the QR
-                    if (update.qr && !usePairingCode) {
+
+                    // Check if we need to show QR or request pairing code
+                    const usePairingCode = config.get('auth.usePairingCode', false);
+
+                    // We need to request a pairing code IF
+                    // 1. pairing code is enabled
+                    // 2. we are not registered
+                    // 3. we are in the 'connecting' state (or have a QR)
+                    if (usePairingCode && !this.sock.authState.creds.registered && (connection === 'connecting' || qr)) {
+                        const phoneNumber = config.get('auth.pairingPhoneNumber', null);
+                        
+                        if (!phoneNumber) {
+                            logger.error('❌ Pairing code is enabled, but "auth.pairingPhoneNumber" is not set in config.');
+                            reject(new Error('Pairing phone number not set'));
+                            return;
+                        }
+                        
+                        logger.info(`📞 Requesting pairing code for phone number: ${phoneNumber}`);
+                        try {
+                            // Use this.sock, not sock
+                            const code = await this.sock.requestPairingCode(phoneNumber); 
+                            const formattedCode = code.slice(0, 4) + '-' + code.slice(4);
+                            
+                            logger.info('=========================================');
+                            logger.info(`   Your Pairing Code: ${formattedCode}   `);
+                            logger.info('=========================================');
+                            
+                            if (this.telegramBridge) {
+                                await this.telegramBridge.logToTelegram('📱 Pairing Code', `Your Pairing Code: ${formattedCode}`);
+                            }
+
+                        } catch (error) {
+                            logger.error('❌ Failed to request pairing code. Full error:');
+                            logger.error(error); // This will print the full error
+                            logger.error('❌ Please ensure the number is a STANDARD WhatsApp account (not Business) and is correct.');
+                            reject(error); // Reject the promise to stop the bot
+                        }
+                    }
+
+                    // If pairing code is OFF and we get a QR, log the QR
+                    if (!usePairingCode && qr) {
                          logger.info('📱 WhatsApp QR code generated (pairing code is off)');
-                         qrcode.generate(update.qr, { small: true });
+                         qrcode.generate(qr, { small: true });
                          if (this.telegramBridge) {
-                            this.telegramBridge.sendQRCode(update.qr).catch(err => {
+                            this.telegramBridge.sendQRCode(qr).catch(err => {
                                 logger.warn('⚠️ TelegramBridge failed to send QR:', err.message);
                             });
                          }
@@ -261,10 +265,11 @@ class HyperWaBot {
             });
 
             this.setupEnhancedEventHandlers(saveCreds);
-            await connectionPromise;
+            await connectionPromise; // Wait for the connection to open
 
         } catch (error) {
-            logger.error('❌ Failed to initialize WhatsApp socket:', error);
+            // This will catch errors from the connectionPromise (like pairing code failure)
+            logger.error('❌ Failed to initialize WhatsApp socket:', error.message);
             logger.info('🔄 Retrying with new QR code...');
             setTimeout(() => this.startWhatsApp(), 5000);
         }
