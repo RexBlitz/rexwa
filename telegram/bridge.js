@@ -1,7 +1,7 @@
 import TelegramBot from 'node-telegram-bot-api';
-import TelegramCommands from './commands.js'; 
-import config from '../config.js';       
-import logger from '../core/logger.js';   
+import TelegramCommands from './commands.js';
+import config from '../config.js';
+import logger from '../core/logger.js';
 import { connectDb } from '../utils/db.js';
 import fs from 'fs-extra';
 import path from 'path';
@@ -27,7 +27,6 @@ class TelegramBridge {
         this.chatMappings = new Map();
         this.userMappings = new Map();
         this.contactMappings = new Map();
-        this.profilePicCache = new Map();
         this.tempDir = path.join(__dirname, '../temp');
         this.isProcessing = false;
         this.activeCallNotifications = new Map();
@@ -105,10 +104,6 @@ class TelegramBridge {
                 switch (mapping.type) {
                     case 'chat':
                         this.chatMappings.set(mapping.data.whatsappJid, mapping.data.telegramTopicId);
-                        // Load profile picture URL into cache
-                        if (mapping.data.profilePicUrl) {
-                            this.profilePicCache.set(mapping.data.whatsappJid, mapping.data.profilePicUrl);
-                        }
                         break;
                     case 'user':
                         this.userMappings.set(mapping.data.whatsappId, {
@@ -130,7 +125,7 @@ class TelegramBridge {
         }
     }
 
-    async saveChatMapping(whatsappJid, telegramTopicId, profilePicUrl = null) {
+    async saveChatMapping(whatsappJid, telegramTopicId) {
         try {
             const updateData = { 
                 type: 'chat',
@@ -142,10 +137,6 @@ class TelegramBridge {
                 } 
             };
 
-            if (profilePicUrl) {
-                updateData.data.profilePicUrl = profilePicUrl;
-            }
-
             await this.collection.updateOne(
                 { type: 'chat', 'data.whatsappJid': whatsappJid },
                 { $set: updateData },
@@ -153,12 +144,9 @@ class TelegramBridge {
             );
             
             this.chatMappings.set(whatsappJid, telegramTopicId);
-            if (profilePicUrl) {
-                this.profilePicCache.set(whatsappJid, profilePicUrl);
-            }
             this.topicVerificationCache.delete(whatsappJid);
             
-            logger.debug(`✅ Saved chat mapping: ${whatsappJid} -> ${telegramTopicId}${profilePicUrl ? ' (with profile pic)' : ''}`);
+            logger.debug(`✅ Saved chat mapping: ${whatsappJid} -> ${telegramTopicId}`);
         } catch (error) {
             logger.error('❌ Failed to save chat mapping:', error);
         }
@@ -174,7 +162,7 @@ class TelegramBridge {
     }
 }
 
-   async loadFiltersFromDb() {
+    async loadFiltersFromDb() {
     this.filters = new Set();
 
     const filterDocs = await this.collection.find({ type: 'filter' }).toArray();
@@ -184,7 +172,7 @@ class TelegramBridge {
 
     logger.info(`✅ Loaded ${this.filters.size} filters from DB`);
 }
-   
+    
    async addFilter(word) {
     this.filters.add(word);
     await this.collection.updateOne(
@@ -198,21 +186,6 @@ async clearFilters() {
     this.filters.clear();
     await this.collection.deleteMany({ type: 'filter' });
 }
-
-
-    async updateProfilePicUrl(whatsappJid, profilePicUrl) {
-        try {
-            await this.collection.updateOne(
-                { type: 'chat', 'data.whatsappJid': whatsappJid },
-                { $set: { 'data.profilePicUrl': profilePicUrl, 'data.lastProfilePicUpdate': new Date() } }
-            );
-            
-            this.profilePicCache.set(whatsappJid, profilePicUrl);
-            logger.debug(`✅ Updated profile pic URL for ${whatsappJid}: ${profilePicUrl}`);
-        } catch (error) {
-            logger.error('❌ Failed to update profile pic URL:', error);
-        }
-    }
 
     async saveUserMapping(whatsappId, userData) {
         try {
@@ -537,8 +510,7 @@ async sendStartMessage() {
                          `✅ Telegram Bridge: Active\n` +
                          `📞 Contacts: ${this.contactMappings.size} synced\n` +
                          `💬 Chats: ${this.chatMappings.size} mapped\n` +
-                         `🔗 Ready to bridge messages!\n\n` +
-                         `⏰ Started at: ${new Date().toLocaleString()}`;
+                         `🔗 Ready to bridge messages!\n\n`;
 
     // Send to all users
     try {
@@ -606,47 +578,46 @@ async sendStartMessage() {
 
     
      async recreateMissingTopics() {
-        try {
-            logger.info('🔄 Checking for missing topics...');
-            const toRecreate = [];
-            
-            for (const [jid, topicId] of this.chatMappings.entries()) {
-                const exists = await this.verifyTopicExists(topicId);
-                if (!exists) {
-                    logger.warn(`🗑️ Topic ${topicId} for ${jid} was deleted, will recreate...`);
-                    toRecreate.push(jid);
-                }
-                await new Promise(resolve => setTimeout(resolve, 100));
-            }
-            
-            for (const jid of toRecreate) {
-                this.chatMappings.delete(jid);
-                this.profilePicCache.delete(jid); // Clear profile pic cache
-                await this.collection.deleteOne({ 
-                    type: 'chat', 
-                    'data.whatsappJid': jid 
-                });
-                
-                const dummyMsg = {
-                    key: { 
-                        remoteJid: jid, 
-                        participant: jid.endsWith('@g.us') ? jid : jid 
-                    }
-                };
-                await this.getOrCreateTopic(jid, dummyMsg);
-                
-                logger.info(`✅ Recreated topic for ${jid}`);
-                await new Promise(resolve => setTimeout(resolve, 500));
-            }
-            
-            if (toRecreate.length > 0) {
-                logger.info(`✅ Recreated ${toRecreate.length} missing topics`);
-            }
-            
-        } catch (error) {
-            logger.error('❌ Error recreating missing topics:', error);
-        }
-    }
+         try {
+             logger.info('🔄 Checking for missing topics...');
+             const toRecreate = [];
+             
+             for (const [jid, topicId] of this.chatMappings.entries()) {
+                 const exists = await this.verifyTopicExists(topicId);
+                 if (!exists) {
+                     logger.warn(`🗑️ Topic ${topicId} for ${jid} was deleted, will recreate...`);
+                     toRecreate.push(jid);
+                 }
+                 await new Promise(resolve => setTimeout(resolve, 100));
+             }
+             
+             for (const jid of toRecreate) {
+                 this.chatMappings.delete(jid);
+                 await this.collection.deleteOne({ 
+                     type: 'chat', 
+                     'data.whatsappJid': jid 
+                 });
+                 
+                 const dummyMsg = {
+                     key: { 
+                         remoteJid: jid, 
+                         participant: jid.endsWith('@g.us') ? jid : jid 
+                     }
+                 };
+                 await this.getOrCreateTopic(jid, dummyMsg);
+                 
+                 logger.info(`✅ Recreated topic for ${jid}`);
+                 await new Promise(resolve => setTimeout(resolve, 500));
+             }
+             
+             if (toRecreate.length > 0) {
+                 logger.info(`✅ Recreated ${toRecreate.length} missing topics`);
+             }
+             
+         } catch (error) {
+             logger.error('❌ Error recreating missing topics:', error);
+         }
+     }
 
   async syncMessage(whatsappMsg, text) {
     if (!this.telegramBot || !config.get('telegram.enabled')) return;
@@ -869,33 +840,33 @@ getMediaType(msg) {
     if (msg.message?.contactMessage) return 'contact';
     return 'text';
 }
-       async syncOutgoingMessage(whatsappMsg, text, topicId, sender) {
-            if (!config.get('telegram.features.sendOutgoingMessages')) return;
-        try {
-            if (whatsappMsg.message?.ptvMessage || (whatsappMsg.message?.videoMessage?.ptv)) {
-                await this.handleWhatsAppMedia(whatsappMsg, 'video_note', topicId, true);
-            } else if (whatsappMsg.message?.imageMessage) {
-                await this.handleWhatsAppMedia(whatsappMsg, 'image', topicId, true);
-            } else if (whatsappMsg.message?.videoMessage) {
-                await this.handleWhatsAppMedia(whatsappMsg, 'video', topicId, true);
-            } else if (whatsappMsg.message?.audioMessage) {
-                await this.handleWhatsAppMedia(whatsappMsg, 'audio', topicId, true);
-            } else if (whatsappMsg.message?.documentMessage) {
-                await this.handleWhatsAppMedia(whatsappMsg, 'document', topicId, true);
-            } else if (whatsappMsg.message?.stickerMessage) {
-                await this.handleWhatsAppMedia(whatsappMsg, 'sticker', topicId, true);
-            } else if (whatsappMsg.message?.locationMessage) { 
-                await this.handleWhatsAppLocation(whatsappMsg, topicId, true);
-            } else if (whatsappMsg.message?.contactMessage) { 
-                await this.handleWhatsAppContact(whatsappMsg, topicId, true);
-            } else if (text) {
-                const messageText = `📤 You: ${text}`;
-                await this.sendSimpleMessage(topicId, messageText, sender);
-            }
-        } catch (error) {
-            logger.error('❌ Failed to sync outgoing message:', error);
+    async syncOutgoingMessage(whatsappMsg, text, topicId, sender) {
+        if (!config.get('telegram.features.sendOutgoingMessages')) return;
+    try {
+        if (whatsappMsg.message?.ptvMessage || (whatsappMsg.message?.videoMessage?.ptv)) {
+            await this.handleWhatsAppMedia(whatsappMsg, 'video_note', topicId, true);
+        } else if (whatsappMsg.message?.imageMessage) {
+            await this.handleWhatsAppMedia(whatsappMsg, 'image', topicId, true);
+        } else if (whatsappMsg.message?.videoMessage) {
+            await this.handleWhatsAppMedia(whatsappMsg, 'video', topicId, true);
+        } else if (whatsappMsg.message?.audioMessage) {
+            await this.handleWhatsAppMedia(whatsappMsg, 'audio', topicId, true);
+        } else if (whatsappMsg.message?.documentMessage) {
+            await this.handleWhatsAppMedia(whatsappMsg, 'document', topicId, true);
+        } else if (whatsappMsg.message?.stickerMessage) {
+            await this.handleWhatsAppMedia(whatsappMsg, 'sticker', topicId, true);
+        } else if (whatsappMsg.message?.locationMessage) { 
+            await this.handleWhatsAppLocation(whatsappMsg, topicId, true);
+        } else if (whatsappMsg.message?.contactMessage) { 
+            await this.handleWhatsAppContact(whatsappMsg, topicId, true);
+        } else if (text) {
+            const messageText = `📤 You: ${text}`;
+            await this.sendSimpleMessage(topicId, messageText, sender);
         }
+    } catch (error) {
+        logger.error('❌ Failed to sync outgoing message:', error);
     }
+}
 
     queueMessageForReadReceipt(chatJid, messageKey) {
         if (!config.get('telegram.features.readReceipts')) return;
@@ -1112,18 +1083,12 @@ async getContactNameForJid(jid) {
                 icon_color: iconColor
             });
 
-            let profilePicUrl = null;
-            if (!isStatus && !isCall) {
-                try {
-                    profilePicUrl = await this.whatsappBot.sock.profilePictureUrl(chatJid, 'image');
-                } catch {}
-            }
-
-            await this.saveChatMapping(chatJid, topic.message_thread_id, profilePicUrl);
+            await this.saveChatMapping(chatJid, topic.message_thread_id);
             logger.info(`🆕 Created Telegram topic: "${topicName}" (ID: ${topic.message_thread_id}) for ${chatJid}`);
 
             if (!isStatus && !isCall && config.get('telegram.features.welcomeMessage')) {
-                await this.sendWelcomeMessage(topic.message_thread_id, chatJid, isGroup, whatsappMsg, profilePicUrl);
+                // Pass `jid` so the welcome message can fetch the pic
+                await this.sendWelcomeMessage(topic.message_thread_id, chatJid, isGroup, whatsappMsg);
             }
 
             return topic.message_thread_id;
@@ -1139,7 +1104,7 @@ async getContactNameForJid(jid) {
     this.creatingTopics.set(chatJid, creationPromise);
     return await creationPromise;
 }
-    async sendWelcomeMessage(topicId, jid, isGroup, whatsappMsg, initialProfilePicUrl = null) {
+    async sendWelcomeMessage(topicId, jid, isGroup, whatsappMsg) {
         try {
             const chatId = config.get('telegram.chatId');
             const phone = jid.split('@')[0];
@@ -1154,11 +1119,9 @@ async getContactNameForJid(jid) {
                 try {
                     const groupMeta = await this.whatsappBot.sock.groupMetadata(jid);
                     welcomeText = `🏷️ **Group Information**\n\n` +
-                                 `📝 **Name:** ${groupMeta.subject}\n` +
-                                 `👥 **Participants:** ${groupMeta.participants.length}\n` +
-                                 `🆔 **Group ID:** \`${jid}\`\n` +
-                                 `📅 **Created:** ${new Date(groupMeta.creation * 1000).toLocaleDateString()}\n\n` +
-                                 `💬 Messages from this group will appear here`;
+                                  `📝 **Name:** ${groupMeta.subject}\n` +
+                                  `👥 **Participants:** ${groupMeta.participants.length}\n` +
+                                  `🆔 **Group ID:** \`${jid}\`\n`;
                 } catch (error) {
                     welcomeText = `🏷️ **Group Chat**\n\n💬 Messages from this group will appear here`;
                     logger.debug(`Could not fetch group metadata for ${jid}:`, error);
@@ -1175,13 +1138,9 @@ async getContactNameForJid(jid) {
                 }
 
                 welcomeText = `👤 **Contact Information**\n\n` +
-                             `📝 **Name:** ${contactName}\n` +
-                             `📱 **Phone:** +${phone}\n` +
-                             `🖐️ **Handle:** ${handleName}\n` +
-                             userStatus +
-                             `🆔 **WhatsApp ID:** \`${jid}\`\n` +
-                             `📅 **First Contact:** ${new Date().toLocaleDateString()}\n\n` +
-                             `💬 Messages with this contact will appear here`;
+                              `📝 **Name:** ${contactName}\n` +
+                              `📱 **Phone:** +${phone}\n` +
+                              `🖐️ **Handle:** ${handleName}\n`;
             }
 
             const sentMessage = await this.telegramBot.sendMessage(chatId, welcomeText, {
@@ -1191,141 +1150,71 @@ async getContactNameForJid(jid) {
 
             await this.telegramBot.pinChatMessage(chatId, sentMessage.message_id);
             
-            // Send initial profile picture if available
-            if (initialProfilePicUrl) {
-                await this.sendProfilePictureWithUrl(topicId, jid, initialProfilePicUrl, false);
+            // --- ADDED ---
+            // Live fetch profile picture
+            if (config.get('telegram.features.profilePicSync')) {
+                try {
+                    const profilePicUrl = await this.whatsappBot.sock.profilePictureUrl(jid, 'image');
+                    if (profilePicUrl) {
+                        await this.telegramBot.sendPhoto(chatId, profilePicUrl, {
+                            message_thread_id: topicId,
+                            caption: '📸 Profile Picture'
+                        });
+                        logger.info(`📸 ✅ Sent initial profile picture for ${jid}`);
+                    }
+                } catch (picError) {
+                    logger.debug(`📸 ❌ Could not fetch initial profile picture for ${jid}:`, picError.message);
+                }
             }
+            // --- END ADDED ---
 
         } catch (error) {
             logger.error('❌ Failed to send welcome message:', error);
         }
     }
 
-    async sendProfilePicture(topicId, jid, isUpdate = false) {
-    try {
-        if (!config.get('telegram.features.profilePicSync')) {
-            logger.debug(`📸 Profile pic sync disabled for ${jid}`);
-            return;
-        }
-
-        logger.debug(`📸 Checking profile picture for ${jid} (update: ${isUpdate})`);
-
-        // 1. Fetch latest URL from WhatsApp
-        let currentProfilePicUrl = null;
-        try {
-            currentProfilePicUrl = await this.whatsappBot.sock.profilePictureUrl(jid, 'image');
-            logger.debug(`📸 Current profile pic URL from WhatsApp: ${currentProfilePicUrl || 'none'}`);
-        } catch (error) {
-            logger.debug(`📸 No profile picture found for ${jid}: ${error.message}`);
-        }
-
-        if (!currentProfilePicUrl) {
-            logger.debug(`📸 No profile picture to send for ${jid}`);
-            return;
-        }
-
-        // 2. Get stored URL from DB
-        const dbEntry = await this.collection.findOne({ type: 'chat', 'data.whatsappJid': jid });
-        const storedProfilePicUrl = dbEntry?.data?.profilePicUrl || null;
-
-        // 3. Compare with DB value
-        if (currentProfilePicUrl === storedProfilePicUrl) {
-            logger.debug(`📸 ⏭️ Profile picture unchanged for ${jid}, skipping send`);
-            this.profilePicCache.set(jid, currentProfilePicUrl); // Refresh cache anyway
-            return;
-        }
-
-        // 4. Send the image
-        const caption = isUpdate ? '📸 Profile picture updated' : '📸 Profile Picture';
-
-        await this.telegramBot.sendPhoto(config.get('telegram.chatId'), currentProfilePicUrl, {
-            message_thread_id: topicId,
-            caption: caption
-        });
-
-        // 5. Update DB + cache
-        await this.updateProfilePicUrl(jid, currentProfilePicUrl);
-        this.profilePicCache.set(jid, currentProfilePicUrl);
-
-        logger.info(`📸 ✅ Sent ${isUpdate ? 'updated' : 'initial'} profile picture for ${jid}`);
-    } catch (error) {
-        logger.error(`📸 ❌ Could not send profile picture for ${jid}:`, error);
-    }
-}
-
-
-    async sendProfilePictureWithUrl(topicId, jid, profilePicUrl, isUpdate = false) {
-    try {
-        if (!config.get('telegram.features.profilePicSync')) {
-            logger.debug(`📸 Profile pic sync disabled for ${jid}`);
-            return;
-        }
-
-        if (!profilePicUrl) {
-            logger.debug(`📸 No profile picture URL provided for ${jid}`);
-            return;
-        }
-
-        const caption = isUpdate ? '📸 Profile picture updated' : '📸 Profile Picture';
-
-        await this.telegramBot.sendPhoto(config.get('telegram.chatId'), profilePicUrl, {
-            message_thread_id: topicId,
-            caption: caption
-        });
-
-        // Always update DB and cache to ensure consistency
-        await this.updateProfilePicUrl(jid, profilePicUrl);
-        this.profilePicCache.set(jid, profilePicUrl);
-
-        logger.info(`📸 ✅ Sent ${isUpdate ? 'updated' : 'initial'} profile picture for ${jid}`);
-    } catch (error) {
-        logger.error(`📸 ❌ Could not send profile picture with URL for ${jid}:`, error);
-    }
-}
-
-
      async handleCallNotification(callEvent) {
-        if (!this.telegramBot || !config.get('telegram.features.callLogs')) return;
+         if (!this.telegramBot || !config.get('telegram.features.callLogs')) return;
 
-        const callerId = callEvent.from;
-        const callKey = `${callerId}_${callEvent.id}`;
+         const callerId = callEvent.from;
+         const callKey = `${callerId}_${callEvent.id}`;
 
-        if (this.activeCallNotifications.has(callKey)) return;
-        
-        this.activeCallNotifications.set(callKey, true);
-        setTimeout(() => {
-            this.activeCallNotifications.delete(callKey);
-        }, 30000);
+         if (this.activeCallNotifications.has(callKey)) return;
+         
+         this.activeCallNotifications.set(callKey, true);
+         setTimeout(() => {
+             this.activeCallNotifications.delete(callKey);
+         }, 30000);
 
-        try {
-            const phone = callerId.split('@')[0];
-            const callerName = this.contactMappings.get(phone) || `+${phone}`;
-            
-            const topicId = await this.getOrCreateTopic('call@broadcast', {
-                key: { remoteJid: 'call@broadcast', participant: callerId }
-            });
+         try {
+             const phone = callerId.split('@')[0];
+             const callerName = this.contactMappings.get(phone) || `+${phone}`;
+             
+             const topicId = await this.getOrCreateTopic('call@broadcast', {
+                 key: { remoteJid: 'call@broadcast', participant: callerId }
+             });
 
-            if (!topicId) {
-                logger.error('❌ Could not create call topic');
-                return;
-            }
+             if (!topicId) {
+                 logger.error('❌ Could not create call topic');
+                 return;
+             }
 
-            const callMessage = `📞 **Incoming Call**\n\n` +
-                               `👤 **From:** ${callerName}\n` +
-                               `📱 **Number:** +${phone}\n` +
-                               `⏰ **Time:** ${new Date().toLocaleString()}\n` +
-                               `📋 **Status:** ${callEvent.status || 'Incoming'}`;
+             const callMessage = `📞 **Incoming Call**\n\n` +
+                                 `👤 **From:** ${callerName}\n` +
+                                 `📱 **Number:** +${phone}\n` +
+                                 `⏰ **Time:** ${new Date().toLocaleString()}\n` +
+                                 `📋 **Status:** ${callEvent.status || 'Incoming'}`;
 
-            await this.telegramBot.sendMessage(config.get('telegram.chatId'), callMessage, {
-                message_thread_id: topicId,
-                parse_mode: 'Markdown'
-            });
+             await this.telegramBot.sendMessage(config.get('telegram.chatId'), callMessage, {
+                 message_thread_id: topicId,
+                 parse_mode: 'Markdown'
+             });
 
-            logger.info(`📞 Sent call notification from ${callerName}`);
-        } catch (error) {
-            logger.error('❌ Error handling call notification:', error);
-        }
-    }
+             logger.info(`📞 Sent call notification from ${callerName}`);
+         } catch (error) {
+             logger.error('❌ Error handling call notification:', error);
+         }
+     }
 
     async handleWhatsAppMedia(whatsappMsg, mediaType, topicId, isOutgoing = false) {
     const sendMedia = async (finalTopicId) => {
@@ -1412,7 +1301,6 @@ async getContactNameForJid(jid) {
 
                 const sender = whatsappMsg.key.remoteJid;
                 this.chatMappings.delete(sender);
-                this.profilePicCache.delete(sender);
                 await this.collection.deleteOne({ type: 'chat', 'data.whatsappJid': sender });
 
                 const newTopicId = await this.getOrCreateTopic(sender, whatsappMsg);
@@ -1474,7 +1362,6 @@ async handleWhatsAppLocation(whatsappMsg, topicId, isOutgoing = false) {
             if (desc.includes("message thread not found")) {
                 logger.warn(`🗑️ Location topic deleted. Recreating...`);
                 this.chatMappings.delete(sender);
-                this.profilePicCache.delete(sender);
                 await this.collection.deleteOne({ type: 'chat', 'data.whatsappJid': sender });
                 const newTopicId = await this.getOrCreateTopic(sender, whatsappMsg);
                 await this.telegramBot.sendLocation(
@@ -1519,7 +1406,6 @@ async handleWhatsAppContact(whatsappMsg, topicId, isOutgoing = false) {
             if (desc.includes("message thread not found")) {
                 logger.warn(`🗑️ Contact topic deleted. Recreating...`);
                 this.chatMappings.delete(sender);
-                this.profilePicCache.delete(sender);
                 await this.collection.deleteOne({ type: 'chat', 'data.whatsappJid': sender });
                 const newTopicId = await this.getOrCreateTopic(sender, whatsappMsg);
                 if (newTopicId) {
@@ -1538,7 +1424,6 @@ async handleWhatsAppContact(whatsappMsg, topicId, isOutgoing = false) {
         logger.error('❌ Error in handleWhatsAppContact:', err);
     }
 }
-
 
 
     async markAsRead(jid, messageKeys) {
@@ -2009,7 +1894,6 @@ async handleWhatsAppContact(whatsappMsg, topicId, isOutgoing = false) {
             if (jid) {
                 // Clean mapping
                 this.chatMappings.delete(jid);
-                this.profilePicCache.delete(jid);
                 await this.collection.deleteOne({ type: 'chat', 'data.whatsappJid': jid });
 
                 // Recreate topic
@@ -2178,19 +2062,6 @@ async handleWhatsAppContact(whatsappMsg, topicId, isOutgoing = false) {
                 }
             } catch (error) {
                 logger.error('❌ Failed to process new contacts:', error);
-            }
-        });
-
-        // FIXED: Profile picture update handler with proper URL checking
-        this.whatsappBot.sock.ev.on('contacts.update', async (contacts) => {
-            for (const contact of contacts) {
-                if (contact.id && this.chatMappings.has(contact.id)) {
-                    const topicId = this.chatMappings.get(contact.id);
-                    
-                    // Check for profile picture updates
-                    logger.debug(`📸 Checking profile picture update for ${contact.id}`);
-                    await this.sendProfilePicture(topicId, contact.id, true);
-                }
             }
         });
 
