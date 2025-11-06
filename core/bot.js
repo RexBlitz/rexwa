@@ -85,7 +85,7 @@ class HyperWaBot {
         await this.moduleLoader.loadModules();
         await this.startWhatsApp();
 
-        logger.info('✅ HyperWa Userbot with Enhanced Store initialized successfully!');
+        logger.info('✅ HyperWa Userbot initialized successfully!');
     }
 
     async startWhatsApp() {
