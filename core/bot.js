@@ -51,40 +51,53 @@ class HyperWaBot {
         }
     }, 300000);
     }
-    async initialize() {
-        logger.info('🔧 Initializing HyperWa Userbot ...');
+  async initialize() {
+    logger.info('🔧 Initializing HyperWa Userbot ...');
 
-        try {
-            this.db = await connectDb();
-            logger.info('✅ Database connected successfully!');
-        } catch (error) {
-            logger.error('❌ Failed to connect to database:', error);
-            process.exit(1);
-        }
-
-        if (config.get('telegram.enabled')) {
-            try {
-                const { default: TelegramBridge } = await import('../telegram/bridge.js');
-                this.telegramBridge = new TelegramBridge(this);
-                await this.telegramBridge.initialize();
-                logger.info('✅ Telegram bridge initialized');
-
-                try {
-                    await this.telegramBridge.sendStartMessage();
-                } catch (err) {
-                    logger.warn('⚠️ Failed to send start message via Telegram:', err.message);
-                }
-            } catch (error) {
-                logger.warn('⚠️ Telegram bridge failed to initialize:', error.message);
-                this.telegramBridge = null;
-            }
-        }
-
-        await this.moduleLoader.loadModules();
-        await this.startWhatsApp();
-
-        logger.info('✅ HyperWa Userbot initialized successfully!');
+    try {
+        this.db = await connectDb();
+        logger.info('✅ Database connected successfully!');
+    } catch (error) {
+        logger.error('❌ Failed to connect to database:', error);
+        process.exit(1);
     }
+
+    if (config.get('telegram.enabled')) {
+        try {
+            const { default: TelegramBridge } = await import('../telegram/bridge.js');
+            this.telegramBridge = new TelegramBridge(this);
+
+            await this.telegramBridge.initialize();
+            logger.info('✅ Telegram bridge initialized');
+
+            try {
+                await this.telegramBridge.sendStartMessage();
+            } catch (err) {
+                logger.warn('⚠️ Failed to send start message via Telegram:', err);
+            }
+
+        } catch (error) {
+
+            // ✅ Print FULL real error, not just message
+            logger.error('❌ Telegram bridge failed to initialize (FULL ERROR):');
+            logger.error('➡️ name:', error.name);
+            logger.error('➡️ message:', error.message);
+            logger.error('➡️ stack:', error.stack);
+            logger.error('➡️ error object:', error);
+
+            if (error.cause) {
+                logger.error('➡️ cause:', error.cause);
+            }
+
+            this.telegramBridge = null;
+        }
+    }
+
+    await this.moduleLoader.loadModules();
+    await this.startWhatsApp();
+
+    logger.info('✅ HyperWa Userbot initialized successfully!');
+}
 
     async startWhatsApp() {
         let state, saveCreds;
