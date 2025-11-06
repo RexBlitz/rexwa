@@ -41,7 +41,7 @@ class TelegramBridge {
         this.topicVerificationCache = new Map();
         this.creatingTopics = new Map(); // jid => Promise
         this.userChatIds = new Set(); // Runtime memory
-        this.jidResolver = jidResolverInstance;
+        this.jidResolver = jidResolver;
     }
 
     async initialize() {
