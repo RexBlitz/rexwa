@@ -22,46 +22,44 @@ const __dirname = path.dirname(__filename);
 class TelegramBridge {
     
 
-    // PN-preferring JID normalizer (Baileys 6.8+): 
-    // Use lidMapping to convert LID -> PN for display/storage; keep groups as-is.
+    // --- PN-preferring JID normalizer (Baileys 6.8+ compatible) ---
+    // Uses lidMapping to convert LID -> PN for presentation (topics, DB, logs).
+    // Keeps group JIDs untouched.
     normalizeJid(jid) {
         if (!jid) return jid;
-
         try {
-            // If JID has a device suffix (user/device@s.whatsapp.net) -> trim
+            // trim device suffix: user/device@s.whatsapp.net
             if (jid.includes('/')) jid = jid.split('/')[0];
 
-            // Groups stay untouched
+            // keep groups as-is
             if (jid.endsWith('@g.us')) return jid;
 
-            // If already PN form like 923001234567@s.whatsapp.net, keep
+            // already PN like 923001234567@s.whatsapp.net
             if (jid.endsWith('@s.whatsapp.net') && /^[0-9]+@s\.whatsapp\.net$/.test(jid)) {
                 return jid;
             }
 
-            // If looks like LID (has @lid or non-digit user), try to resolve via lidMapping
+            // resolve via Baileys lidMapping if possible
             const userPart = jid.split('@')[0];
-            if (this.whatsappBot?.sock?.signalRepository?.lidMapping?.getPNForLID) {
-                const pn = this.whatsappBot.sock.signalRepository.lidMapping.getPNForLID(userPart);
+            const mapping = this.whatsappBot?.sock?.signalRepository?.lidMapping;
+            if (mapping?.getPNForLID) {
+                const pn = mapping.getPNForLID(userPart);
                 if (pn && /^[0-9]+$/.test(pn)) {
                     return `${pn}@s.whatsapp.net`;
                 }
             }
 
-            // Fallback: extract digits; if reasonable length, treat as PN for UI/DB
+            // fallback: extract digits
             const digits = (jid.match(/\d+/g) || []).join('');
             if (digits && digits.length >= 8) {
                 return `${digits}@s.whatsapp.net`;
             }
 
-            // Last resort: return original
             return jid;
-        } catch {
+        } catch (e) {
             return jid;
         }
     }
-
-}
 
 constructor(whatsappBot) {
         this.whatsappBot = whatsappBot;
@@ -245,6 +243,7 @@ async clearFilters() {
 
 
     async updateProfilePicUrl(whatsappJid, profilePicUrl) {
+        whatsappJid = this.normalizeJid(whatsappJid);
         try {
             await this.collection.updateOne(
                 { type: 'chat', 'data.whatsappJid': whatsappJid },
@@ -676,7 +675,7 @@ async sendStartMessage() {
                 const dummyMsg = {
                     key: { 
                         remoteJid: jid, 
-                        participant: jid.endsWith('@g.us') ? jid : jid 
+                        participant: jid 
                     }
                 };
                 await this.getOrCreateTopic(jid, dummyMsg);
@@ -1959,7 +1958,7 @@ async handleWhatsAppContact(whatsappMsg, topicId, isOutgoing = false) {
                 const dummyMsg = {
                     key: {
                         remoteJid: jid,
-                        participant: jid.endsWith('@g.us') ? jid : jid
+                        participant: jid
                     }
                 };
                 const newTopicId = await this.getOrCreateTopic(jid, dummyMsg);
