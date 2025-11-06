@@ -20,7 +20,6 @@ import MessageHandler from './message-handler.js';
 import { connectDb } from '../utils/db.js';
 import ModuleLoader from './module-loader.js';
 import { useMongoAuthState } from '../utils/mongoAuthState.js';
-import JidResolver from './jid-resolver.js'; 
 
 class HyperWaBot {
     constructor() {
@@ -34,7 +33,6 @@ class HyperWaBot {
         this.qrCodeSent = false;
         this.useMongoAuth = config.get('auth.useMongoAuth', false);
         this.isFirstConnection = true;
-        this.jidResolver = new JidResolver(this, new Map());
         // Initialize the enhanced store with advanced options
         this.store = makeInMemoryStore({
         logger: logger.child({ module: 'store' }),
@@ -67,7 +65,7 @@ class HyperWaBot {
         if (config.get('telegram.enabled')) {
             try {
                 const { default: TelegramBridge } = await import('../telegram/bridge.js');
-                this.telegramBridge = new TelegramBridge(this, this.jidResolver); 
+                this.telegramBridge = new TelegramBridge(this);
                 await this.telegramBridge.initialize();
                 logger.info('✅ Telegram bridge initialized');
 
