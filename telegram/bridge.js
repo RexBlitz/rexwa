@@ -315,152 +315,51 @@ async clearFilters() {
         }
     }
 
-  async fixLidTopicNames() {
-    try {
-        logger.info('🔧 Starting LID topic name fix...');
-        const chatId = config.get('telegram.chatId');
-        
-        if (!chatId || chatId.includes('YOUR_CHAT_ID')) {
-            logger.error('❌ Invalid telegram.chatId');
-            return;
-        }
-        
-        let fixedCount = 0;
-        let skippedCount = 0;
-        let errorCount = 0;
-        
-        for (const [jid, topicId] of this.chatMappings.entries()) {
-            // Skip special topics and groups
-            if (jid.endsWith('@g.us') || jid === 'status@broadcast' || jid === 'call@broadcast') {
-                skippedCount++;
-                continue;
+    async updateTopicNames() {
+        try {
+            const chatId = config.get('telegram.chatId');
+            if (!chatId || chatId.includes('YOUR_CHAT_ID')) {
+                logger.error('❌ Invalid telegram.chatId for updating topic names');
+                return;
             }
             
-            try {
-                // Get current topic name
-                let currentTopicName = null;
-                try {
-                    const forumTopics = await this.telegramBot.getForumTopicIconStickers();
-                    // Note: We can't directly get topic name, so we'll try to edit it
-                    logger.debug(`📝 Processing topic ${topicId} for ${jid}`);
-                } catch (e) {
-                    logger.debug(`Could not fetch topic info: ${e.message}`);
-                }
-                
-                // Check if JID is a LID
-                const isLid = jid.includes('@lid');
-                
-                if (isLid) {
-                    logger.info(`🔍 Found LID topic: ${jid} (Topic ID: ${topicId})`);
-                }
-                
-                // Get proper contact name (will resolve LID if needed)
-                const properName = await this.getContactNameForJid(jid);
-                
-                // Check if name looks like a LID ID (starts with + followed by non-numeric chars)
-                const looksLikeLid = properName.match(/^\+[A-Za-z0-9_-]{10,}$/);
-                
-                if (isLid || looksLikeLid) {
-                    logger.info(`🔄 Updating topic ${topicId} from LID to proper name: "${properName}"`);
+            logger.info('📝 Updating Telegram topic names...');
+            let updatedCount = 0;
+            
+            for (const [jid, topicId] of this.chatMappings.entries()) {
+                if (!jid.endsWith('@g.us') && jid !== 'status@broadcast' && jid !== 'call@broadcast') {
+                    const phone = jid.split('@')[0];
+                    const contactName = this.contactMappings.get(phone);
                     
-                    try {
-                        await this.telegramBot.editForumTopic(chatId, topicId, {
-                            name: properName
-                        });
-                        
-                        fixedCount++;
-                        logger.info(`✅ Fixed topic ${topicId}: ${jid} → "${properName}"`);
-                        
-                        // Rate limit: wait 300ms between updates
-                        await new Promise(resolve => setTimeout(resolve, 300));
-                        
-                    } catch (editError) {
-                        const errMsg = editError.response?.data?.description || editError.message;
-                        
-                        if (errMsg.includes('message thread not found')) {
-                            logger.warn(`🗑️ Topic ${topicId} was deleted, removing from mappings`);
-                            this.chatMappings.delete(jid);
-                            this.profilePicCache.delete(jid);
-                            await this.collection.deleteOne({ 
-                                type: 'chat', 
-                                'data.whatsappJid': jid 
+                    if (contactName) {
+                        try {
+                            // Get current topic info first
+                            const currentTopic = await this.telegramBot.getChat(chatId);
+                            logger.debug(`📝 Attempting to update topic ${topicId} for ${phone} to "${contactName}"`);
+                            
+                            await this.telegramBot.editForumTopic(chatId, topicId, {
+                                name: contactName
                             });
-                        } else {
-                            logger.error(`❌ Failed to update topic ${topicId}: ${errMsg}`);
-                            errorCount++;
+                            
+                            logger.info(`📝 ✅ Updated topic name for ${phone}: "${contactName}"`);
+                            updatedCount++;
+                        } catch (error) {
+                            logger.error(`❌ Failed to update topic ${topicId} for ${phone} to "${contactName}":`, error.message);
                         }
-                    }
-                } else {
-                    logger.debug(`✓ Topic ${topicId} already has proper name: "${properName}"`);
-                    skippedCount++;
-                }
-                
-            } catch (error) {
-                logger.error(`❌ Error processing ${jid}:`, error);
-                errorCount++;
-            }
-        }
-        
-        logger.info(`\n📊 LID Topic Fix Summary:
-✅ Fixed: ${fixedCount}
-⏭️  Skipped: ${skippedCount}
-❌ Errors: ${errorCount}
-📝 Total: ${this.chatMappings.size}`);
-        
-        return { fixedCount, skippedCount, errorCount };
-        
-    } catch (error) {
-        logger.error('❌ Error in fixLidTopicNames:', error);
-        throw error;
-    }
-}
-
-// 🆕 NEW METHOD: Update existing updateTopicNames to use LID resolution
-async updateTopicNames() {
-    try {
-        const chatId = config.get('telegram.chatId');
-        if (!chatId || chatId.includes('YOUR_CHAT_ID')) {
-            logger.error('❌ Invalid telegram.chatId for updating topic names');
-            return;
-        }
-        
-        logger.info('📝 Updating Telegram topic names...');
-        let updatedCount = 0;
-        
-        for (const [jid, topicId] of this.chatMappings.entries()) {
-            if (!jid.endsWith('@g.us') && jid !== 'status@broadcast' && jid !== 'call@broadcast') {
-                try {
-                    // 🔥 FIX: Use getContactNameForJid which handles LID resolution
-                    const contactName = await this.getContactNameForJid(jid);
-                    
-                    // Only update if we have a real name (not just formatted phone)
-                    if (contactName && !contactName.startsWith('+')) {
-                        logger.debug(`📝 Attempting to update topic ${topicId} for ${jid} to "${contactName}"`);
                         
-                        await this.telegramBot.editForumTopic(chatId, topicId, {
-                            name: contactName
-                        });
-                        
-                        logger.info(`📝 ✅ Updated topic name for ${jid}: "${contactName}"`);
-                        updatedCount++;
+                        // Add delay to avoid rate limits
+                        await new Promise(resolve => setTimeout(resolve, 200));
                     } else {
-                        logger.debug(`📝 ⚠️ Skipping topic update for ${jid} - only have phone number: ${contactName}`);
+                        logger.debug(`📝 ⚠️ No contact name found for ${phone}, keeping current topic name`);
                     }
-                } catch (error) {
-                    logger.error(`❌ Failed to update topic ${topicId} for ${jid}:`, error.message);
                 }
-                
-                // Add delay to avoid rate limits
-                await new Promise(resolve => setTimeout(resolve, 200));
             }
+            
+            logger.info(`✅ Updated ${updatedCount} topic names`);
+        } catch (error) {
+            logger.error('❌ Failed to update topic names:', error);
         }
-        
-        logger.info(`✅ Updated ${updatedCount} topic names`);
-    } catch (error) {
-        logger.error('❌ Failed to update topic names:', error);
     }
-}
-
     async setReaction(chatId, messageId, emoji) {
         try {
             const token = config.get('telegram.botToken');
