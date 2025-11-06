@@ -42,25 +42,19 @@ class HyperWaBot {
         autoSaveInterval: 30000
     });
     
-    // Load existing data
     this.store.loadFromFile();
-    
-    // ✅ Proper cache setup
+
     this.msgRetryCounterCache = new NodeCache();
     this.onDemandMap = new Map();
-    
-    // Memory cleanup
+
     setInterval(() => {
         if (this.onDemandMap.size > 100) {
             this.onDemandMap.clear();
         }
-    }, 300000); // 5 minutes
-
-
-
+    }, 300000);
 
     async initialize() {
-        logger.info('🔧 Initializing HyperWa Userbot with Enhanced Store...');
+        logger.info('🔧 Initializing HyperWa Userbot ...');
 
         try {
             this.db = await connectDb();
@@ -96,7 +90,6 @@ class HyperWaBot {
 
     async startWhatsApp() {
         let state, saveCreds;
-
         // Clean up existing socket if present
         if (this.sock) {
             logger.info('🧹 Cleaning up existing WhatsApp socket');
