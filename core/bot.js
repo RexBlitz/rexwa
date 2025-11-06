@@ -52,7 +52,7 @@ class HyperWaBot {
             this.onDemandMap.clear();
         }
     }, 300000);
-
+    }
     async initialize() {
         logger.info('🔧 Initializing HyperWa Userbot ...');
 
