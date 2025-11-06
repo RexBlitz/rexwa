@@ -22,21 +22,46 @@ const __dirname = path.dirname(__filename);
 class TelegramBridge {
     
 
-    // PN-only JID resolver: always convert any JID/LID/device to <digits>@s.whatsapp.net
-    resolveJid(jid) {
+    // PN-preferring JID normalizer (Baileys 6.8+): 
+    // Use lidMapping to convert LID -> PN for display/storage; keep groups as-is.
+    normalizeJid(jid) {
         if (!jid) return jid;
+
         try {
-            // Remove device suffix: "1234/device@s.whatsapp.net" → "1234@s.whatsapp.net"
+            // If JID has a device suffix (user/device@s.whatsapp.net) -> trim
             if (jid.includes('/')) jid = jid.split('/')[0];
-            // Extract only digits
-            const m = jid.match(/\d+/g);
-            if (!m) return jid;
-            const number = m.join('');
-            return `${number}@s.whatsapp.net`;
+
+            // Groups stay untouched
+            if (jid.endsWith('@g.us')) return jid;
+
+            // If already PN form like 923001234567@s.whatsapp.net, keep
+            if (jid.endsWith('@s.whatsapp.net') && /^[0-9]+@s\.whatsapp\.net$/.test(jid)) {
+                return jid;
+            }
+
+            // If looks like LID (has @lid or non-digit user), try to resolve via lidMapping
+            const userPart = jid.split('@')[0];
+            if (this.whatsappBot?.sock?.signalRepository?.lidMapping?.getPNForLID) {
+                const pn = this.whatsappBot.sock.signalRepository.lidMapping.getPNForLID(userPart);
+                if (pn && /^[0-9]+$/.test(pn)) {
+                    return `${pn}@s.whatsapp.net`;
+                }
+            }
+
+            // Fallback: extract digits; if reasonable length, treat as PN for UI/DB
+            const digits = (jid.match(/\d+/g) || []).join('');
+            if (digits && digits.length >= 8) {
+                return `${digits}@s.whatsapp.net`;
+            }
+
+            // Last resort: return original
+            return jid;
         } catch {
             return jid;
         }
     }
+
+}
 
 constructor(whatsappBot) {
         this.whatsappBot = whatsappBot;
@@ -122,14 +147,14 @@ constructor(whatsappBot) {
             for (const mapping of mappings) {
                 switch (mapping.type) {
                     case 'chat':
-                        this.chatMappings.set(this.resolveJid(mapping.data.whatsappJid), mapping.data.telegramTopicId);
+                        this.chatMappings.set(this.normalizeJid(mapping.data.whatsappJid), mapping.data.telegramTopicId);
                         // Load profile picture URL into cache
                         if (mapping.data.profilePicUrl) {
-                            this.profilePicCache.set(this.resolveJid(mapping.data.whatsappJid), mapping.data.profilePicUrl);
+                            this.profilePicCache.set(this.normalizeJid(mapping.data.whatsappJid), mapping.data.profilePicUrl);
                         }
                         break;
                     case 'user':
-                        this.userMappings.set(this.resolveJid(mapping.data.whatsappId), {
+                        this.userMappings.set(this.normalizeJid(mapping.data.whatsappId), {
                             name: mapping.data.name,
                             phone: mapping.data.phone,
                             firstSeen: mapping.data.firstSeen,
@@ -149,7 +174,7 @@ constructor(whatsappBot) {
     }
 
     async saveChatMapping(whatsappJid, telegramTopicId, profilePicUrl = null) {
-        whatsappJid = this.resolveJid(whatsappJid);
+        whatsappJid = this.normalizeJid(whatsappJid);
         try {
             const updateData = { 
                 type: 'chat',
@@ -299,7 +324,7 @@ async clearFilters() {
             let syncedCount = 0;
             
             for (const [rawJid, contact] of contactEntries) {
-                const jid = this.resolveJid(rawJid);
+                const jid = this.normalizeJid(rawJid);
                 if (!jid || jid === 'status@broadcast' || !contact) continue;
                 
                 const phone = jid.split('@')[0];
@@ -672,8 +697,8 @@ async sendStartMessage() {
     async syncMessage(whatsappMsg, text) {
         if (!this.telegramBot || !config.get('telegram.enabled')) return;
 
-        const sender = this.resolveJid(whatsappMsg.key.remoteJid);
-        const participant = this.resolveJid(whatsappMsg.key.participant) || sender;
+        const sender = this.normalizeJid(whatsappMsg.key.remoteJid);
+        const participant = this.normalizeJid(whatsappMsg.key.participant) || sender;
         const isFromMe = whatsappMsg.key.fromMe;
         
         if (sender === 'status@broadcast') {
@@ -728,7 +753,7 @@ async handleStatusMessage(whatsappMsg, text) {
     try {
         if (!config.get('telegram.features.statusSync')) return;
         
-        const participant = this.resolveJid(whatsappMsg.key.participant);
+        const participant = this.normalizeJid(whatsappMsg.key.participant);
         const phone = participant.split('@')[0];
         const contactName = this.contactMappings.get(phone) || `+${phone}`;
         
@@ -949,7 +974,7 @@ getMediaType(msg) {
 
 
     async createUserMapping(participant, whatsappMsg) {
-        participant = this.resolveJid(participant);
+        participant = this.normalizeJid(participant);
         if (this.userMappings.has(participant)) {
             const userData = this.userMappings.get(participant);
             userData.messageCount = (userData.messageCount || 0) + 1;
@@ -980,7 +1005,7 @@ getMediaType(msg) {
     }
 
    async getOrCreateTopic(chatJid, whatsappMsg) {
-        chatJid = this.resolveJid(chatJid);
+        chatJid = this.normalizeJid(chatJid);
     // ✅ If topic already cached, return
     if (this.chatMappings.has(chatJid)) {
         return this.chatMappings.get(chatJid);
@@ -1204,7 +1229,7 @@ getMediaType(msg) {
      async handleCallNotification(callEvent) {
         if (!this.telegramBot || !config.get('telegram.features.callLogs')) return;
 
-        const callerId = this.resolveJid(callEvent.from);
+        const callerId = this.normalizeJid(callEvent.from);
         const callKey = `${callerId}_${callEvent.id}`;
 
         if (this.activeCallNotifications.has(callKey)) return;
@@ -1250,7 +1275,7 @@ getMediaType(msg) {
             let mediaMessage;
             let fileName = `media_${Date.now()}`;
             let caption = this.extractText(whatsappMsg);
-            const sender = this.resolveJid(whatsappMsg.key.remoteJid);
+            const sender = this.normalizeJid(whatsappMsg.key.remoteJid);
 
             switch (mediaType) {
                 case 'image': mediaMessage = whatsappMsg.message.imageMessage; fileName += '.jpg'; break;
@@ -1327,7 +1352,7 @@ getMediaType(msg) {
             if (desc.includes('message thread not found')) {
                 logger.warn(`🗑️ Topic ${topicId} was deleted. Recreating and retrying...`);
 
-                const sender = this.resolveJid(whatsappMsg.key.remoteJid);
+                const sender = this.normalizeJid(whatsappMsg.key.remoteJid);
                 this.chatMappings.delete(sender);
                 this.profilePicCache.delete(sender);
                 await this.collection.deleteOne({ type: 'chat', 'data.whatsappJid': sender });
@@ -1369,7 +1394,7 @@ getMediaType(msg) {
 async handleWhatsAppLocation(whatsappMsg, topicId, isOutgoing = false) {
     try {
         const locationMessage = whatsappMsg.message.locationMessage;
-        const sender = this.resolveJid(whatsappMsg.key.remoteJid);
+        const sender = this.normalizeJid(whatsappMsg.key.remoteJid);
         const chatId = config.get('telegram.chatId');
         const caption = isOutgoing ? '📤 You shared location' : '';
 
@@ -1419,7 +1444,7 @@ async handleWhatsAppContact(whatsappMsg, topicId, isOutgoing = false) {
         const contactMessage = whatsappMsg.message.contactMessage;
         const displayName = contactMessage.displayName || 'Unknown Contact';
         const phoneNumber = contactMessage.vcard.match(/TEL.*:(.*)/)?.[1] || '';
-        const sender = this.resolveJid(whatsappMsg.key.remoteJid);
+        const sender = this.normalizeJid(whatsappMsg.key.remoteJid);
         const caption = isOutgoing
             ? `📤 You shared contact: ${displayName}`
             : `📇 Contact: ${displayName}`;
@@ -1459,7 +1484,7 @@ async handleWhatsAppContact(whatsappMsg, topicId, isOutgoing = false) {
 
 
     async markAsRead(jid, messageKeys) {
-        jid = this.resolveJid(jid);
+        jid = this.normalizeJid(jid);
         try {
             if (!this.whatsappBot?.sock || !messageKeys.length || !config.get('telegram.features.readReceipts')) return;
             
@@ -1558,7 +1583,7 @@ async handleWhatsAppContact(whatsappMsg, topicId, isOutgoing = false) {
                 return;
             }
 
-            const statusJid = this.resolveJid(originalStatusKey.participant);
+            const statusJid = this.normalizeJid(originalStatusKey.participant);
             const phone = statusJid.split('@')[0];
             const contactName = this.contactMappings.get(phone) || `+${phone}`;
 
@@ -1922,7 +1947,7 @@ async handleWhatsAppContact(whatsappMsg, topicId, isOutgoing = false) {
 
             // Find JID from topic ID
             const jidEntry = [...this.chatMappings.entries()].find(([jid, tId]) => tId === topicId);
-            const jid = jidEntry?.[0] && this.resolveJid(jidEntry[0]);
+            const jid = jidEntry?.[0] && this.normalizeJid(jidEntry[0]);
 
             if (jid) {
                 // Clean mapping
@@ -1974,7 +1999,7 @@ async handleWhatsAppContact(whatsappMsg, topicId, isOutgoing = false) {
 
     findWhatsAppJidByTopic(topicId) {
         for (const [jid, topic] of this.chatMappings.entries()) {
-            if (topic === topicId) { return this.resolveJid(jid); }
+            if (topic === topicId) { return this.normalizeJid(jid); }
         }
         return null;
     }
@@ -2028,7 +2053,7 @@ async handleWhatsAppContact(whatsappMsg, topicId, isOutgoing = false) {
                             updatedCount++;
                             
                             // Update topic name immediately
-                            const jid = this.resolveJid(contact.id);
+                            const jid = this.normalizeJid(contact.id);
                             if (this.chatMappings.has(jid)) {
                                 const topicId = this.chatMappings.get(jid);
                                 try {
@@ -2071,7 +2096,7 @@ async handleWhatsAppContact(whatsappMsg, topicId, isOutgoing = false) {
                             newCount++;
                             
                             // Update topic name if topic exists
-                            const jid = this.resolveJid(contact.id);
+                            const jid = this.normalizeJid(contact.id);
                             if (this.chatMappings.has(jid)) {
                                 const topicId = this.chatMappings.get(jid);
                                 try {
@@ -2100,12 +2125,12 @@ async handleWhatsAppContact(whatsappMsg, topicId, isOutgoing = false) {
         // FIXED: Profile picture update handler with proper URL checking
         this.whatsappBot.sock.ev.on('contacts.update', async (contacts) => {
             for (const contact of contacts) {
-                if (contact.id && this.chatMappings.has(this.resolveJid(contact.id))) {
-                    const topicId = this.chatMappings.get(this.resolveJid(contact.id));
+                if (contact.id && this.chatMappings.has(this.normalizeJid(contact.id))) {
+                    const topicId = this.chatMappings.get(this.normalizeJid(contact.id));
                     
                     // Check for profile picture updates
                     logger.debug(`📸 Checking profile picture update for ${contact.id}`);
-                    await this.sendProfilePicture(topicId, this.resolveJid(contact.id), true);
+                    await this.sendProfilePicture(topicId, this.normalizeJid(contact.id), true);
                 }
             }
         });
