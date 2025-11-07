@@ -45,38 +45,38 @@ class MessageHandler {
 
         }
     }
-
-    async processMessage(msg) {
-        // Handle status messages
-        if (msg.key.remoteJid === 'status@broadcast') {
-            return this.handleStatusMessage(msg);
-        }
-
-        // Extract text from message (including captions)
-        const text = this.extractText(msg);
-        
-        // Check if it's a command (only for text messages, not media with captions)
-        const prefix = config.get('bot.prefix');
-        const isCommand = text && text.startsWith(prefix) && !this.hasMedia(msg);
-        
-        // Execute message hooks
-        await this.executeMessageHooks('pre_process', msg, text);
-        
-        if (isCommand) {
-            await this.handleCommand(msg, text);
-        } else {
-            // Handle non-command messages (including media)
-            await this.handleNonCommandMessage(msg, text);
-        }
-
-        // Execute post-process hooks
-        await this.executeMessageHooks('post_process', msg, text);
-
-        // FIXED: ALWAYS sync to Telegram if bridge is active (this was the main issue)
-        if (this.bot.telegramBridge) {
-            await this.bot.telegramBridge.syncMessage(msg, text);
-        }
+async processMessage(msg) {
+    // Handle status messages
+    if (msg.key.remoteJid === 'status@broadcast') {
+        return this.handleStatusMessage(msg);
     }
+
+    const text = this.extractText(msg);
+    const prefix = config.get('bot.prefix');
+    const isCommand = text && text.startsWith(prefix) && !this.hasMedia(msg);
+
+    // ✅ Pre-process hooks (as original)
+    await this.executeMessageHooks('pre_process', msg, text);
+
+    if (isCommand) {
+        await this.handleCommand(msg, text);
+    } else {
+        // ✅ ✅ NEW: Let Jarvis AI try natural language first
+        await this.executeMessageHooks('nlp', msg, text);
+
+        // ✅ Continue with normal non-command handling
+        await this.handleNonCommandMessage(msg, text);
+    }
+
+    // ✅ Post hooks
+    await this.executeMessageHooks('post_process', msg, text);
+
+    // ✅ Telegram sync
+    if (this.bot.telegramBridge) {
+        await this.bot.telegramBridge.syncMessage(msg, text);
+    }
+}
+
 
     async executeMessageHooks(hookName, msg, text) {
         const hooks = this.messageHooks.get(hookName) || [];
@@ -118,10 +118,8 @@ async handleCommand(msg, text) {
     const participantJid = msg.key.participant || chatJid;
     const prefix = config.get('bot.prefix');
 
-    // FIX: Define sender variable
     const sender = chatJid;
 
-    // 🧠 Figure out who executed the command
     let executorJid;
     if (msg.key.fromMe) {
         executorJid = config.get('bot.owner') || this.bot.sock.user?.id;
@@ -131,7 +129,6 @@ async handleCommand(msg, text) {
         executorJid = chatJid;
     }
 
-    // 🪪 Resolve readable display name
     const contact =
         this.bot.store?.contacts?.[executorJid] ||
         this.bot.store?.contacts?.[executorJid.split('@')[0] + '@s.whatsapp.net'];
@@ -146,32 +143,21 @@ async handleCommand(msg, text) {
     const command = args[0].toLowerCase();
     const params = args.slice(1);
 
-    // Add presence and typing indicators for commands
     try {
         await this.bot.sock.readMessages([msg.key]);
         await this.bot.sock.presenceSubscribe(sender);
         await this.bot.sock.sendPresenceUpdate('composing', sender);
-    } catch (error) {
-        // Ignore presence errors
-    }
+    } catch {}
 
     if (!this.checkPermissions(msg, command)) {
         if (config.get('features.sendPermissionError', false)) {
-            try {
-                await this.bot.sock.sendPresenceUpdate('paused', sender);
-            } catch (error) {
-                // Ignore presence errors
-            }
+            try { await this.bot.sock.sendPresenceUpdate('paused', sender); } catch {}
             return this.bot.sendMessage(sender, {
                 text: '❌ You don\'t have permission to use this command.'
             });
         }
-        try {
-            await this.bot.sock.sendPresenceUpdate('paused', sender);
-        } catch (error) {
-            // Ignore presence errors
-        }
-        return; // silently ignore
+        try { await this.bot.sock.sendPresenceUpdate('paused', sender); } catch {}
+        return;
     }
 
     const userId = executorJid.split('@')[0];
@@ -180,11 +166,7 @@ async handleCommand(msg, text) {
         const canExecute = await rateLimiter.checkCommandLimit(userId);
         if (!canExecute) {
             const remainingTime = await rateLimiter.getRemainingTime(userId);
-            try {
-                await this.bot.sock.sendPresenceUpdate('paused', sender);
-            } catch (error) {
-                // Ignore presence errors
-            }
+            try { await this.bot.sock.sendPresenceUpdate('paused', sender); } catch {}
             return this.bot.sendMessage(sender, {
                 text: `⏱️ Rate limit exceeded. Try again in ${Math.ceil(remainingTime / 1000)} seconds.`
             });
@@ -196,37 +178,25 @@ async handleCommand(msg, text) {
 
     if (handler) {
         try {
-            // Always add ⏳ reaction for ALL commands
             await this.bot.sock.sendMessage(sender, {
                 react: { key: msg.key, text: '⏳' }
             });
-        } catch (error) {
-            // Ignore reaction errors
-        }
+        } catch {}
 
         try {
             await handler.execute(msg, params, {
                 bot: this.bot,
                 sender: chatJid,
                 participant: executorJid,
-                isGroup: chatJid.endsWith('@g.us')
+                isGroup
             });
 
-            // Clear typing indicator on success
-            try {
-                await this.bot.sock.sendPresenceUpdate('paused', sender);
-            } catch (error) {
-                // Ignore presence errors
-            }
-
-            // Clear reaction on success for ALL commands
+            try { await this.bot.sock.sendPresenceUpdate('paused', sender); } catch {}
             try {
                 await this.bot.sock.sendMessage(sender, {
                     react: { key: msg.key, text: '' }
                 });
-            } catch (error) {
-                // Ignore reaction errors
-            }
+            } catch {}
 
             logger.info(`✅ Command executed: ${command} by ${displayName} (${executorJid})`);
 
@@ -238,54 +208,45 @@ async handleCommand(msg, text) {
             }
 
         } catch (error) {
-            // Clear typing indicator on error
-            try {
-                await this.bot.sock.sendPresenceUpdate('paused', sender);
-            } catch (error) {
-                // Ignore presence errors
-            }
-
-            // Keep ❌ reaction on error (don't clear it)
+            try { await this.bot.sock.sendPresenceUpdate('paused', sender); } catch {}
             try {
                 await this.bot.sock.sendMessage(sender, {
                     react: { key: msg.key, text: '❌' }
                 });
-            } catch (error) {
-                // Ignore reaction errors
-            }
+            } catch {}
 
-            logger.error(`❌ Command failed: ${command} | ${error.message || 'No message'}`);
-            logger.debug(error.stack || error);
+            logger.error(`❌ Command failed: ${command} | ${error.message}`);
 
-            if (!error._handledBySmartError && error?.message) {
-                await this.bot.sendMessage(sender, {
-                    text: `❌ Command failed: ${error.message}`
-                });
+            if (!error._handledBySmartError) {
+                await this.bot.sendMessage(sender, { text: `❌ Command failed: ${error.message}` });
             }
 
             if (this.bot.telegramBridge) {
-                await this.bot.telegramBridge.logToTelegram('❌ Command Error',
-                    `Command: ${command}\nError: ${error.message}\nUser: ${displayName}`);
+                await this.bot.telegramBridge.logToTelegram(
+                    '❌ Command Error',
+                    `Command: ${command}\nError: ${error.message}\nUser: ${displayName}`
+                );
             }
         }
 
-    } else if (respondToUnknown) {
-        try {
-            await this.bot.sock.sendPresenceUpdate('paused', sender);
-        } catch (error) {
-            // Ignore presence errors
-        }
-        await this.bot.sendMessage(sender, {
-            text: `❓ Unknown command: ${command}\nType *${prefix}menu* for available commands.`
-        });
     } else {
-        try {
-            await this.bot.sock.sendPresenceUpdate('paused', sender);
-        } catch (error) {
-            // Ignore presence errors
+        // ✅ AI WRONG COMMAND HOOK
+        await this.executeMessageHooks('unknown_command', msg, {
+            command,
+            args: params,
+            text
+        });
+
+        try { await this.bot.sock.sendPresenceUpdate('paused', sender); } catch {}
+
+        if (respondToUnknown) {
+            return this.bot.sendMessage(sender, {
+                text: `❓ Unknown command: ${command}\nType *${prefix}menu* for available commands.`
+            });
         }
     }
 }
+
 
     async handleNonCommandMessage(msg, text) {
         // Log media messages for debugging
