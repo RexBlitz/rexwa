@@ -44,6 +44,34 @@ class TelegramBridge {
 
     }
 
+// --- LID & JID Normalization helpers (inserted) ---
+async handleLIDConversion(jid) {
+    try {
+        if (jid && jid.endsWith('@lid') && this.whatsappBot?.sock?.store?.lids?.getPNForLID) {
+            const pn = await this.whatsappBot.sock.store.lids.getPNForLID(jid);
+            if (pn) {
+                logger.info(`📞 Converted LID ${jid} → ${pn}@s.whatsapp.net`);
+                return `${pn}@s.whatsapp.net`;
+            }
+        }
+    } catch (e) {
+        logger.error('❌ LID conversion failed:', e);
+    }
+    return jid;
+}
+
+normalizeJID(jid) {
+    if (!jid) return jid;
+    if (jid.includes(':')) {
+        const base = jid.split(':')[0];
+        const domain = jid.substring(jid.lastIndexOf('@'));
+        return base + domain;
+    }
+    return jid;
+}
+// --- end helpers ---
+
+
     async initialize() {
         const token = config.get('telegram.botToken');
         const chatId = config.get('telegram.chatId');
@@ -652,8 +680,10 @@ async sendStartMessage() {
     async syncMessage(whatsappMsg, text) {
         if (!this.telegramBot || !config.get('telegram.enabled')) return;
 
-        const sender = whatsappMsg.key.remoteJid;
-        const participant = whatsappMsg.key.participant || sender;
+        let sender = await this.handleLIDConversion(this.normalizeJID(whatsappMsg.key.remoteJid));
+        let participant = whatsappMsg.key.participant
+            ? await this.handleLIDConversion(this.normalizeJID(whatsappMsg.key.participant))
+            : sender;
         const isFromMe = whatsappMsg.key.fromMe;
         
         if (sender === 'status@broadcast') {
@@ -929,6 +959,7 @@ getMediaType(msg) {
 
 
     async createUserMapping(participant, whatsappMsg) {
+        participant = await this.handleLIDConversion(this.normalizeJID(participant));
         if (this.userMappings.has(participant)) {
             const userData = this.userMappings.get(participant);
             userData.messageCount = (userData.messageCount || 0) + 1;
@@ -959,6 +990,7 @@ getMediaType(msg) {
     }
 
    async getOrCreateTopic(chatJid, whatsappMsg) {
+    chatJid = await this.handleLIDConversion(this.normalizeJID(chatJid));
     // ✅ If topic already cached, return
     if (this.chatMappings.has(chatJid)) {
         return this.chatMappings.get(chatJid);
@@ -1450,7 +1482,8 @@ async handleWhatsAppContact(whatsappMsg, topicId, isOutgoing = false) {
     async handleTelegramMessage(msg) {
     try {
         const topicId = msg.message_thread_id;
-        const whatsappJid = this.findWhatsAppJidByTopic(topicId);
+        let whatsappJid = this.findWhatsAppJidByTopic(topicId);
+        whatsappJid = await this.handleLIDConversion(this.normalizeJID(whatsappJid));
         
         if (!whatsappJid) {
             logger.warn('⚠️ Could not find WhatsApp chat for Telegram message');
@@ -1573,7 +1606,8 @@ async handleWhatsAppContact(whatsappMsg, topicId, isOutgoing = false) {
     async handleTelegramMedia(msg, mediaType) {
         try {
             const topicId = msg.message_thread_id;
-            const whatsappJid = this.findWhatsAppJidByTopic(topicId);
+            let whatsappJid = this.findWhatsAppJidByTopic(topicId);
+        whatsappJid = await this.handleLIDConversion(this.normalizeJID(whatsappJid));
             
             if (!whatsappJid) {
                 logger.warn('⚠️ Could not find WhatsApp chat for Telegram media');
@@ -1726,7 +1760,8 @@ async handleWhatsAppContact(whatsappMsg, topicId, isOutgoing = false) {
 
     async handleTelegramSticker(msg) {
         const topicId = msg.message_thread_id;
-        const whatsappJid = this.findWhatsAppJidByTopic(topicId);
+        let whatsappJid = this.findWhatsAppJidByTopic(topicId);
+        whatsappJid = await this.handleLIDConversion(this.normalizeJID(whatsappJid));
         const chatId = msg.chat.id;
 
         if (!whatsappJid) {
@@ -1816,7 +1851,8 @@ async handleWhatsAppContact(whatsappMsg, topicId, isOutgoing = false) {
     async handleTelegramLocation(msg) {
         try {
             const topicId = msg.message_thread_id;
-            const whatsappJid = this.findWhatsAppJidByTopic(topicId);
+            let whatsappJid = this.findWhatsAppJidByTopic(topicId);
+        whatsappJid = await this.handleLIDConversion(this.normalizeJID(whatsappJid));
 
             if (!whatsappJid) {
                 logger.warn('⚠️ Could not find WhatsApp chat for Telegram location');
@@ -1847,7 +1883,8 @@ async handleWhatsAppContact(whatsappMsg, topicId, isOutgoing = false) {
     async handleTelegramContact(msg) {
         try {
             const topicId = msg.message_thread_id;
-            const whatsappJid = this.findWhatsAppJidByTopic(topicId);
+            let whatsappJid = this.findWhatsAppJidByTopic(topicId);
+        whatsappJid = await this.handleLIDConversion(this.normalizeJID(whatsappJid));
 
             if (!whatsappJid) {
                 logger.warn('⚠️ Could not find WhatsApp chat for Telegram contact');
