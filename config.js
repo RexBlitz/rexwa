@@ -12,17 +12,25 @@ class Config {
 
             auth: {
                 usePairingCode: true,
-                phoneNumber: 923075417411 ,
+                phoneNumber: 923075417411,
                 useMongoAuth: true,
                 clearAuthOnStart: false
             },
-ai: {
-  enabled: true,
-  persona: 'friendly_jarvis',
-  gemini: {
-    apiKey:'AIzaSyBXZavyLmsgqlxiOgI8sDU-hnZFwNKNwXk', 
-    model: 'gemini-1.5-flash'
-  },
+
+            // ✅ AI / Jarvis Config
+            ai: {
+                enabled: true,
+                persona: 'friendly_jarvis',
+                gemini: {
+                    // ✅ Best place to store your API key
+                    apiKey: 'AIzaSyBXZavyLmsgqlxiOgI8sDU-hnZFwNKNwXk',
+                    
+                    // ✅ Recommended: "gemini-1.5-flash" or "gemini-2.0-flash"
+                    model: 'gemini-2.5-flash' 
+                }
+            },
+
+            // ✅ Fixed admin block (was inside auth accidentally)
             admins: [
                 '923075417411',
                 '923334445555'
