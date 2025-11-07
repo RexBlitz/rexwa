@@ -1,5 +1,6 @@
 import config from '../config.js';
-import logger from '../core/logger.js' 
+// FIX: Renamed the import to 'log' to match usage in the module
+import log from '../core/logger.js' 
 
 const DEFAULT_MODEL = 'gemini-2.5-flash'; // fast & cheap; change in config if needed
 
