@@ -108,9 +108,9 @@ export default class JarvisModule {
 
     this.commands = [
       {
-        name: 'ai',
+        name: 'xi',
         description: 'Enable/disable AI NL control or run a prompt. Usage: .ai on|off|status|<ask anything>',
-        usage: '.ai on | .ai off | .ai status | .ai <message>',
+        usage: '.xi on | .ai off | .ai status | .ai <message>',
         permissions: 'owner',
         execute: async (msg, params, { bot, sender }) => {
           const sub = (params[0] || '').toLowerCase();
