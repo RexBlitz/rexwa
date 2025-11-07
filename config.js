@@ -16,7 +16,13 @@ class Config {
                 useMongoAuth: true,
                 clearAuthOnStart: false
             },
-
+ai: {
+  enabled: true,
+  persona: 'friendly_jarvis',
+  gemini: {
+    apiKey:'AIzaSyBXZavyLmsgqlxiOgI8sDU-hnZFwNKNwXk', 
+    model: 'gemini-1.5-flash'
+  },
             admins: [
                 '923075417411',
                 '923334445555'
@@ -29,7 +35,7 @@ class Config {
                 autoReply: false,
                 autoViewStatus: false,
                 telegramBridge: true,
-                respondToUnknownCommands: false,
+                respondToUnknownCommands: true,
                 sendPermissionError: false
             },
 
