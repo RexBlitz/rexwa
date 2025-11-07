@@ -1,7 +1,5 @@
 import config from '../config.js';
-import logger from '../core/logger.js' assert { type: 'javascript' }; // adjust if your logger path differs
-
-const log = logger?.child ? logger.child({ module: 'jarvis' }) : (logger2?.child ? logger2.child({ module: 'jarvis' }) : console);
+import logger from '../core/logger.js' 
 
 const DEFAULT_MODEL = 'gemini-2.5-flash'; // fast & cheap; change in config if needed
 
