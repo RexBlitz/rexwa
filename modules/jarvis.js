@@ -154,14 +154,13 @@ export default class JarvisModule {
     this.messageHooks = {
       // natural-language messages (non-command)
       nlp: this.onNlp.bind(this),
-      // unknown command auto-correct/help
-      unknown_command: this.onUnknownCommand.bind(this)
+
     };
-    log.info('Jarvis AI module initialized.');
+
   }
 
   async destroy() {
-    log.info('Jarvis AI module destroyed.');
+
   }
 
   // --- AI Core ---
@@ -213,53 +212,101 @@ You are Jarvis: concise, helpful, slightly witty, never rude. Avoid long paragra
   }
 
   // --- Hooks ---
-  async onNlp(msg, text, bot) {
+async onNlp(msg, text, bot) {
+  try {
+    if (!this.state.enabled) return;
+    if (!text || !text.trim()) return;
+
+    const jid = msg.key.remoteJid;
+
+    // ✅ Read message + start typing indicator
     try {
-      if (!this.state.enabled) return;
+      await this.bot.sock.readMessages([msg.key]);
+      await this.bot.sock.presenceSubscribe(jid);
+      await this.bot.sock.sendPresenceUpdate('composing', jid);
+    } catch (e) {
+      log.error("Presence error (nlp):", e);
+    }
 
-      // Ignore empty or pure media messages
-      if (!text || !text.trim()) return;
+    const lang = await this.detectLanguage(text).catch(() => 'en');
+    const manifest = buildManifest(this.bot);
 
-      const lang = await this.detectLanguage(text).catch(() => 'en');
-      const manifest = buildManifest(this.bot);
+    const routed = await this.routeIntent(text, manifest, lang);
+    const action = routed?.action;
 
-      const routed = await this.routeIntent(text, manifest, lang);
-      const action = routed?.action;
+    if (action === 'command' && routed?.command) {
+      const found = findCommandHandler(this.bot, routed.command);
+      if (!found?.handler) {
+        const reply = routed?.reply || `I couldn't execute "${routed.command}".`;
 
-      if (action === 'command' && routed?.command) {
-        const found = findCommandHandler(this.bot, routed.command);
-        if (!found?.handler) {
-          // fallback to chat if somehow unmapped
-          const reply = routed?.reply || `I couldn't execute "${routed.command}".`;
-          return replySameLang(this.bot, msg.key.remoteJid, reply, lang, config.get?.('ai.gemini.apiKey'), config.get?.('ai.gemini.model'));
-        }
-
-        // Execute the command handler as if user typed it
-        const params = Array.isArray(routed.args) ? routed.args : [];
+        // ✅ stop typing
         try {
-          await found.handler.execute(msg, params, {
-            bot: this.bot,
-            sender: msg.key.remoteJid,
-            participant: msg.key.participant || msg.key.remoteJid,
-            isGroup: msg.key.remoteJid.endsWith('@g.us')
-          });
-        } catch (err) {
-          log.error('AI command execution error:', err);
-          await replySameLang(this.bot, msg.key.remoteJid, `❌ Failed to run ${routed.command}: ${err.message}`, lang,
-            config.get?.('ai.gemini.apiKey'), config.get?.('ai.gemini.model'));
-        }
-        return;
+          await this.bot.sock.sendPresenceUpdate('paused', jid);
+        } catch {}
+
+        return replySameLang(this.bot, jid, reply, lang,
+          config.get?.('ai.gemini.apiKey'),
+          config.get?.('ai.gemini.model')
+        );
       }
 
-      // action = chat (or fallback)
-      const reply = routed?.reply || await this.freeChat(text, lang);
-      await replySameLang(this.bot, msg.key.remoteJid, reply, lang,
-        config.get?.('ai.gemini.apiKey'), config.get?.('ai.gemini.model'));
+      const params = Array.isArray(routed.args) ? routed.args : [];
 
-    } catch (e) {
-      log.error('onNlp error:', e);
+      try {
+        await found.handler.execute(msg, params, {
+          bot: this.bot,
+          sender: jid,
+          participant: msg.key.participant || jid,
+          isGroup: jid.endsWith('@g.us')
+        });
+      } catch (err) {
+        log.error('AI command execution error:', err);
+
+        // ✅ stop typing
+        try {
+          await this.bot.sock.sendPresenceUpdate('paused', jid);
+        } catch {}
+
+        await replySameLang(
+          this.bot,
+          jid,
+          `❌ Failed to run ${routed.command}: ${err.message}`,
+          lang,
+          config.get?.('ai.gemini.apiKey'),
+          config.get?.('ai.gemini.model')
+        );
+      }
+
+      // ✅ Stop typing after success
+      try {
+        await this.bot.sock.sendPresenceUpdate('paused', jid);
+      } catch {}
+
+      return;
     }
+
+    // ✅ Chat / fallback
+    const reply = routed?.reply || await this.freeChat(text, lang);
+
+    // ✅ stop typing before sending
+    try {
+      await this.bot.sock.sendPresenceUpdate('paused', jid);
+    } catch {}
+
+    await replySameLang(
+      this.bot,
+      jid,
+      reply,
+      lang,
+      config.get?.('ai.gemini.apiKey'),
+      config.get?.('ai.gemini.model')
+    );
+
+  } catch (e) {
+    log.error('onNlp error:', e);
   }
+}
+
 
 
   }
