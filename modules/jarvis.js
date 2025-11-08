@@ -1,8 +1,7 @@
 import config from '../config.js';
-// FIX: Renamed the import to 'log' to match usage in the module
 import log from '../core/logger.js' 
 
-const DEFAULT_MODEL = 'gemini-2.5-flash'; // fast & cheap; change in config if needed
+const DEFAULT_MODEL = 'gemini-2.5-flash';
 
 // --- Helpers ---
 async function geminiJson(prompt, systemInstruction, model, apiKey) {
@@ -262,32 +261,6 @@ You are Jarvis: concise, helpful, slightly witty, never rude. Avoid long paragra
     }
   }
 
-  async onUnknownCommand(msg, payload, bot) {
-    try {
-      if (!this.state.enabled) return;
-      const { command, text = '' } = payload || {};
-      const manifest = buildManifest(this.bot);
 
-      const system = `
-You correct wrong commands for a WhatsApp bot. Known commands:
-${stringifyManifestShort(manifest)}
-
-Given a possibly wrong command, suggest the best match, with 1-line explanation.
-Return JSON:
-{"suggestion":"<closest command or empty>","note":"<short reason>"}.
-`;
-      const out = await geminiJson(JSON.stringify({ wrong: command, text }), system,
-        config.get?.('ai.gemini.model'), config.get?.('ai.gemini.apiKey'));
-
-      const sug = out?.suggestion;
-      const note = out?.note;
-      if (sug) {
-        await this.bot.sendMessage(msg.key.remoteJid, {
-          text: `❓ Unknown command: *${command}*\n👉 Did you mean *${config.get('bot.prefix')}${sug}*?\n💡 ${note || 'Closest match'}`
-        });
-      }
-    } catch (e) {
-      log.error('onUnknownCommand error:', e);
-    }
   }
 }
