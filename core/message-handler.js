@@ -230,24 +230,40 @@ async handleCommand(msg, text) {
         }
 
     } else {
-        // ✅ AI WRONG COMMAND HOOK
-        await this.executeMessageHooks('unknown_command', msg, {
-            command,
-            args: params,
-            text
-        });
+    // ✅ Always call AI unknown command hook
+    await this.executeMessageHooks(
+        'unknown_command',
+        msg,
+        { command, args: params, text }
+    );
 
-        try { await this.bot.sock.sendPresenceUpdate('paused', sender); } catch {}
-
-        if (respondToUnknown) {
-            return this.bot.sendMessage(sender, {
-                text: `❓ Unknown command: ${command}\nType *${prefix}menu* for available commands.`
-            });
+    // ✅ If user asked anything that contains the word “help”
+    // override and call actual .help command
+    if (/help|menu|commands|options/i.test(text)) {
+        const helpHandler = this.commandHandlers.get('help');
+        if (helpHandler) {
+            try {
+                return await helpHandler.execute(msg, [], {
+                    bot: this.bot,
+                    sender: chatJid,
+                    participant: executorJid,
+                    isGroup
+                });
+            } catch (e) {
+                logger.error("Help override failed:", e);
+            }
         }
     }
+
+    // ✅ Keep your original fallback behavior
+    try { await this.bot.sock.sendPresenceUpdate('paused', sender); } catch {}
+
+    if (respondToUnknown) {
+        return this.bot.sendMessage(sender, {
+            text: `❓ Unknown command: ${command}\nType *${prefix}menu* for available commands.`
+        });
+    }
 }
-
-
     async handleNonCommandMessage(msg, text) {
         // Log media messages for debugging
         if (this.hasMedia(msg)) {
