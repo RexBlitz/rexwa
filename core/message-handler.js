@@ -78,16 +78,24 @@ async processMessage(msg) {
 }
 
 
-    async executeMessageHooks(hookName, msg, text) {
-        const hooks = this.messageHooks.get(hookName) || [];
-        for (const hook of hooks) {
-            try {
-                await hook(msg, text, this.bot);
-            } catch (error) {
-                logger.error(`Error executing hook ${hookName}:`, error);
+   async executeMessageHooks(hookName, msg, data) {
+    const hooks = this.messageHooks.get(hookName) || [];
+
+    for (const hook of hooks) {
+        try {
+            // If data is an object → treat it as payload (AI unknown_command)
+            if (typeof data === "object" && !Array.isArray(data)) {
+                await hook(msg, data, this.bot);
+            } else {
+                // original behavior for NLP / pre_process / post_process
+                await hook(msg, data, this.bot);
             }
+        } catch (error) {
+            logger.error(`Error executing hook ${hookName}:`, error);
         }
     }
+}
+
     // New method to check if message has media
     hasMedia(msg) {
         return !!(
