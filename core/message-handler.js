@@ -77,24 +77,16 @@ async processMessage(msg) {
     }
 }
 
-
-   async executeMessageHooks(hookName, msg, data) {
-    const hooks = this.messageHooks.get(hookName) || [];
-
-    for (const hook of hooks) {
-        try {
-            // If data is an object → treat it as payload (AI unknown_command)
-            if (typeof data === "object" && !Array.isArray(data)) {
-                await hook(msg, data, this.bot);
-            } else {
-                // original behavior for NLP / pre_process / post_process
-                await hook(msg, data, this.bot);
+    async executeMessageHooks(hookName, msg, text) {
+        const hooks = this.messageHooks.get(hookName) || [];
+        for (const hook of hooks) {
+            try {
+                await hook(msg, text, this.bot);
+            } catch (error) {
+                logger.error(`Error executing hook ${hookName}:`, error);
             }
-        } catch (error) {
-            logger.error(`Error executing hook ${hookName}:`, error);
         }
     }
-}
 
     // New method to check if message has media
     hasMedia(msg) {
@@ -237,51 +229,24 @@ async handleCommand(msg, text) {
             }
         }
 
-    } else {
-    // ✅ Always trigger AI unknown command hook FIRST
-    const hooks = this.messageHooks.get("unknown_command") || [];
-
-    if (hooks.length > 0) {
-        for (const hook of hooks) {
-            try {
-                await hook(
-                    msg,
-                    { command, args: params, text },
-                    this.bot
-                );
-            } catch (err) {
-                logger.error("unknown_command hook error:", err);
-            }
+    } else if (respondToUnknown) {
+        try {
+            await this.bot.sock.sendPresenceUpdate('paused', sender);
+        } catch (error) {
+            // Ignore presence errors
         }
-
-        try { await this.bot.sock.sendPresenceUpdate("paused", sender); } catch {}
-        return;  // ✅ Prevent fallback execution
-    }
-
-    // ✅ "help" auto-detection (your previous behavior)
-    if (/help|menu|commands|options/i.test(text)) {
-        const helpHandler = this.commandHandlers.get("help");
-        if (helpHandler) {
-            return helpHandler.execute(msg, [], {
-                bot: this.bot,
-                sender: chatJid,
-                participant: executorJid,
-                isGroup
-            });
-        }
-    }
-
-    // ✅ Fallback old system
-    try { await this.bot.sock.sendPresenceUpdate("paused", sender); } catch {}
-
-    if (respondToUnknown) {
-        return this.bot.sendMessage(sender, {
+        await this.bot.sendMessage(sender, {
             text: `❓ Unknown command: ${command}\nType *${prefix}menu* for available commands.`
         });
+    } else {
+        try {
+            await this.bot.sock.sendPresenceUpdate('paused', sender);
+        } catch (error) {
+            // Ignore presence errors
+        }
     }
 }
 
-}
     async handleNonCommandMessage(msg, text) {
         // Log media messages for debugging
         if (this.hasMedia(msg)) {
