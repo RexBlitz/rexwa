@@ -306,4 +306,5 @@ async onNlp(msg, text, bot) {
     log.error('onNlp error:', e);
   }
   }
+}
 
