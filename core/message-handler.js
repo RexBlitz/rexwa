@@ -264,6 +264,7 @@ async handleCommand(msg, text) {
         });
     }
 }
+}
     async handleNonCommandMessage(msg, text) {
         // Log media messages for debugging
         if (this.hasMedia(msg)) {
