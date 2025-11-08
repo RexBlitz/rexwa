@@ -238,33 +238,41 @@ async handleCommand(msg, text) {
         }
 
     } else {
-    // ✅ Always call AI unknown command hook
-    await this.executeMessageHooks(
-        'unknown_command',
-        msg,
-        { command, args: params, text }
-    );
+    // ✅ Always trigger AI unknown command hook FIRST
+    const hooks = this.messageHooks.get("unknown_command") || [];
 
-    // ✅ If user asked anything that contains the word “help”
-    // override and call actual .help command
-    if (/help|menu|commands|options/i.test(text)) {
-        const helpHandler = this.commandHandlers.get('help');
-        if (helpHandler) {
+    if (hooks.length > 0) {
+        for (const hook of hooks) {
             try {
-                return await helpHandler.execute(msg, [], {
-                    bot: this.bot,
-                    sender: chatJid,
-                    participant: executorJid,
-                    isGroup
-                });
-            } catch (e) {
-                logger.error("Help override failed:", e);
+                await hook(
+                    msg,
+                    { command, args: params, text },
+                    this.bot
+                );
+            } catch (err) {
+                logger.error("unknown_command hook error:", err);
             }
+        }
+
+        try { await this.bot.sock.sendPresenceUpdate("paused", sender); } catch {}
+        return;  // ✅ Prevent fallback execution
+    }
+
+    // ✅ "help" auto-detection (your previous behavior)
+    if (/help|menu|commands|options/i.test(text)) {
+        const helpHandler = this.commandHandlers.get("help");
+        if (helpHandler) {
+            return helpHandler.execute(msg, [], {
+                bot: this.bot,
+                sender: chatJid,
+                participant: executorJid,
+                isGroup
+            });
         }
     }
 
-    // ✅ Keep your original fallback behavior
-    try { await this.bot.sock.sendPresenceUpdate('paused', sender); } catch {}
+    // ✅ Fallback old system
+    try { await this.bot.sock.sendPresenceUpdate("paused", sender); } catch {}
 
     if (respondToUnknown) {
         return this.bot.sendMessage(sender, {
@@ -272,6 +280,7 @@ async handleCommand(msg, text) {
         });
     }
 }
+
 }
     async handleNonCommandMessage(msg, text) {
         // Log media messages for debugging
