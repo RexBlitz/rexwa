@@ -45,16 +45,33 @@ class MessageHandler {
         }
     }
 
-    async processMessage(msg) {
-        //  RAW MESSAGE LOGGING
+async processMessage(msg) {
+        // ✅ RAW MESSAGE LOGGING
         logger.info('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
         logger.info('📨 RAW MESSAGE RECEIVED:');
         logger.info('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
         
-
+        // Log message key structure
+        // 🔑 CHANGE 1: Combine label and JSON string into one argument
+        logger.info('🔑 Message Key:\n' + JSON.stringify(msg.key, null, 2)); 
+        
         // Log message type and content
+        // 🔑 CHANGE 2: Stringify the keys array to ensure it's logged
+        logger.info('📝 Message Type:', JSON.stringify(Object.keys(msg.message || {}))); 
+        
+        // 🔑 CHANGE 3: Combine label and JSON string into one argument
+        logger.info('💬 Full Message Object:\n' + JSON.stringify(msg, null, 2)); 
+        
+        // Log extracted identifiers
+        logger.info('👤 Identifiers:');
+        logger.info(`   - remoteJid: ${msg.key.remoteJid}`);
+        logger.info(`   - remoteJidAlt: ${msg.key.remoteJidAlt || 'N/A'}`);
+        logger.info(`   - participant: ${msg.key.participant || 'N/A'}`);
+        logger.info(`   - participantAlt: ${msg.key.participantAlt || 'N/A'}`);
+        logger.info(`   - fromMe: ${msg.key.fromMe}`);
+        
+        logger.info('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
 
-        logger.info('💬 Full Message Object:', JSON.stringify(msg, null, 2));
         
         // Handle status messages
         if (msg.key.remoteJid === 'status@broadcast') {
