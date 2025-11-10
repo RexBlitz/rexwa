@@ -17,20 +17,17 @@ class Config {
                 clearAuthOnStart: false
             },
 
-            // ✅ AI / Jarvis Config
+            //  AI / Jarvis Config
             ai: {
                 enabled: false,
                 persona: 'friendly_jarvis',
                 gemini: {
-                    // ✅ Best place to store your API key
+        
                     apiKey: 'AIzaSyBXZavyLmsgqlxiOgI8sDU-hnZFwNKNwXk',
-                    
-                    // ✅ Recommended: "gemini-1.5-flash" or "gemini-2.0-flash"
                     model: 'gemini-2.5-flash' 
                 }
             },
 
-            // ✅ Fixed admin block (was inside auth accidentally)
             admins: [
                 '923075417411',
                 '923334445555'
