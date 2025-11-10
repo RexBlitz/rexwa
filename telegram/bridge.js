@@ -1994,19 +1994,34 @@ async handleWhatsAppContact(whatsappMsg, topicId, isOutgoing = false) {
         await this.syncContacts();
     }
 
-    async setupWhatsAppHandlers() {
+async setupWhatsAppHandlers() {
         if (!this.whatsappBot?.sock) {
             logger.warn('⚠️ WhatsApp socket not available for setting up handlers');
             return;
         }
+
+        const normalizeJid = (contact) => {
+            let jid = contact.id;
+            // The contact.id is the preferred ID. If it ends in @lid, 
+            // we should try to use the provided PN JID for stable lookup.
+            if (jid.endsWith('@lid') && contact.phoneNumber) {
+                // Construct the PN JID from the phone number
+                return contact.phoneNumber + '@s.whatsapp.net';
+            }
+            // Use the provided ID (which could be a stable PN JID or the LID)
+            return jid;
+        };
 
         // FIXED: Enhanced contact sync and topic name update handlers
         this.whatsappBot.sock.ev.on('contacts.update', async (contacts) => {
             try {
                 let updatedCount = 0;
                 for (const contact of contacts) {
-                    if (contact.id && contact.name) {
-                        const phone = contact.id.split('@')[0];
+                    // Use the normalized JID for mapping/topic lookup
+                    const jid = normalizeJid(contact);
+                    
+                    if (jid && !jid.endsWith('@lid') && contact.name) {
+                        const phone = jid.split('@')[0];
                         const oldName = this.contactMappings.get(phone);
                         
                         // Only update if it's a real contact name (not handle name)
@@ -2020,7 +2035,6 @@ async handleWhatsAppContact(whatsappMsg, topicId, isOutgoing = false) {
                             updatedCount++;
                             
                             // Update topic name immediately
-                            const jid = contact.id;
                             if (this.chatMappings.has(jid)) {
                                 const topicId = this.chatMappings.get(jid);
                                 try {
@@ -2050,8 +2064,11 @@ async handleWhatsAppContact(whatsappMsg, topicId, isOutgoing = false) {
             try {
                 let newCount = 0;
                 for (const contact of contacts) {
-                    if (contact.id && contact.name) {
-                        const phone = contact.id.split('@')[0];
+                    // Use the normalized JID for mapping/topic lookup
+                    const jid = normalizeJid(contact);
+
+                    if (jid && !jid.endsWith('@lid') && contact.name) {
+                        const phone = jid.split('@')[0];
                         // Only save real contact names
                         if (contact.name !== phone && 
                             !contact.name.startsWith('+') && 
@@ -2063,7 +2080,6 @@ async handleWhatsAppContact(whatsappMsg, topicId, isOutgoing = false) {
                             newCount++;
                             
                             // Update topic name if topic exists
-                            const jid = contact.id;
                             if (this.chatMappings.has(jid)) {
                                 const topicId = this.chatMappings.get(jid);
                                 try {
@@ -2092,12 +2108,13 @@ async handleWhatsAppContact(whatsappMsg, topicId, isOutgoing = false) {
         // FIXED: Profile picture update handler with proper URL checking
         this.whatsappBot.sock.ev.on('contacts.update', async (contacts) => {
             for (const contact of contacts) {
-                if (contact.id && this.chatMappings.has(contact.id)) {
-                    const topicId = this.chatMappings.get(contact.id);
+                const jid = normalizeJid(contact); // Use normalized JID
+                if (jid && this.chatMappings.has(jid)) {
+                    const topicId = this.chatMappings.get(jid);
                     
                     // Check for profile picture updates
-                    logger.debug(`📸 Checking profile picture update for ${contact.id}`);
-                    await this.sendProfilePicture(topicId, contact.id, true);
+                    logger.debug(`📸 Checking profile picture update for ${jid}`);
+                    await this.sendProfilePicture(topicId, jid, true);
                 }
             }
         });
