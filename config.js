@@ -19,7 +19,7 @@ class Config {
 
             // ✅ AI / Jarvis Config
             ai: {
-                enabled: true,
+                enabled: false,
                 persona: 'friendly_jarvis',
                 gemini: {
                     // ✅ Best place to store your API key
