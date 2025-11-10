@@ -55,20 +55,20 @@ async processMessage(msg) {
     const prefix = config.get('bot.prefix');
     const isCommand = text && text.startsWith(prefix) && !this.hasMedia(msg);
 
-    // ✅ Pre-process hooks (as original)
+    // Pre-process hooks (as original)
     await this.executeMessageHooks('pre_process', msg, text);
 
     if (isCommand) {
         await this.handleCommand(msg, text);
     } else {
-        // ✅ ✅ NEW: Let Jarvis AI try natural language first
+        // NEW: Let Jarvis AI try natural language first
         await this.executeMessageHooks('nlp', msg, text);
 
-        // ✅ Continue with normal non-command handling
+        // Continue with normal non-command handling
         await this.handleNonCommandMessage(msg, text);
     }
 
-    // ✅ Post hooks
+    //  Post hooks
     await this.executeMessageHooks('post_process', msg, text);
 
     // ✅ Telegram sync
@@ -132,6 +132,7 @@ async handleCommand(msg, text) {
     const contact =
         this.bot.store?.contacts?.[executorJid] ||
         this.bot.store?.contacts?.[executorJid.split('@')[0] + '@s.whatsapp.net'];
+
     const displayName =
         contact?.name ||
         contact?.notify ||
@@ -149,33 +150,41 @@ async handleCommand(msg, text) {
         await this.bot.sock.sendPresenceUpdate('composing', sender);
     } catch {}
 
-    if (!this.checkPermissions(msg, command)) {
+    // ============================================================
+    //  NEW MODE BEHAVIOR FIX BLOCK
+    // ============================================================
+
+    const userId = (msg.key.participant || msg.key.remoteJid).split('@')[0];
+    const ownerId = config.get('bot.owner').split('@')[0];
+    const isPrivate = config.get('features.mode') === 'private';
+
+    const hasPermission = this.checkPermissions(msg, command);
+
+    //  If command does NOT exist at all → unknown command handling
+    const handler = this.commandHandlers.get(command);
+    const respondToUnknown = config.get('features.respondToUnknownCommands', false);
+
+    //  If command exists but user has no permission
+    if (!hasPermission && handler) {
+        if (isPrivate && userId !== ownerId) {
+            try { await this.bot.sock.sendPresenceUpdate('paused', sender); } catch {}
+            return;
+        }
+
         if (config.get('features.sendPermissionError', false)) {
             try { await this.bot.sock.sendPresenceUpdate('paused', sender); } catch {}
             return this.bot.sendMessage(sender, {
-                text: '❌ You don\'t have permission to use this command.'
+                text: '❌ You don’t have permission to use this command.'
             });
         }
+
         try { await this.bot.sock.sendPresenceUpdate('paused', sender); } catch {}
         return;
     }
 
-    const userId = executorJid.split('@')[0];
-
-    if (config.get('features.rateLimiting')) {
-        const canExecute = await rateLimiter.checkCommandLimit(userId);
-        if (!canExecute) {
-            const remainingTime = await rateLimiter.getRemainingTime(userId);
-            try { await this.bot.sock.sendPresenceUpdate('paused', sender); } catch {}
-            return this.bot.sendMessage(sender, {
-                text: `⏱️ Rate limit exceeded. Try again in ${Math.ceil(remainingTime / 1000)} seconds.`
-            });
-        }
-    }
-
-    const handler = this.commandHandlers.get(command);
-    const respondToUnknown = config.get('features.respondToUnknownCommands', false);
-
+    // ============================================================
+    //  VALID COMMAND EXECUTION
+    // ============================================================
     if (handler) {
         try {
             await this.bot.sock.sendMessage(sender, {
@@ -229,23 +238,53 @@ async handleCommand(msg, text) {
             }
         }
 
-    } else if (respondToUnknown) {
-        try {
-            await this.bot.sock.sendPresenceUpdate('paused', sender);
-        } catch (error) {
-            // Ignore presence errors
-        }
-        await this.bot.sendMessage(sender, {
-            text: `❓ Unknown command: ${command}\nType *${prefix}menu* for available commands.`
-        });
-    } else {
-        try {
-            await this.bot.sock.sendPresenceUpdate('paused', sender);
-        } catch (error) {
-            // Ignore presence errors
-        }
+        return;
     }
+
+    // ============================================================
+    //  UNKNOWN COMMAND HANDLING WITH PRIVATE-MODE SILENCE
+    // ============================================================
+
+    if (respondToUnknown) {
+
+        //  Private mode: only owner sees unknown command error / suggestion
+        if (isPrivate && userId !== ownerId) {
+            try { await this.bot.sock.sendPresenceUpdate('paused', sender); } catch {}
+            return;
+        }
+
+        //  Suggest closest correct command
+        const allCommands = Array.from(this.commandHandlers.keys());
+
+        const findClosest = (input) => {
+            let best = null;
+            let bestScore = Infinity;
+
+            for (const cmd of allCommands) {
+                const dist = levenshteinDistance(input, cmd);
+                if (dist < bestScore) {
+                    bestScore = dist;
+                    best = cmd;
+                }
+            }
+            return { best, bestScore };
+        };
+
+        const { best, bestScore } = findClosest(command);
+
+        let suggestText = `🚩 Unknown command: *${command}*`;
+
+        if (bestScore <= 3) {
+            suggestText += `\n Did you mean *${prefix}${best}* ?`;
+        }
+
+        try { await this.bot.sock.sendPresenceUpdate('paused', sender); } catch {}
+        return this.bot.sendMessage(sender, { text: suggestText });
+    }
+
+    try { await this.bot.sock.sendPresenceUpdate('paused', sender); } catch {}
 }
+
 
     async handleNonCommandMessage(msg, text) {
         // Log media messages for debugging
@@ -271,8 +310,8 @@ async handleCommand(msg, text) {
 checkPermissions(msg, commandName) {
     const participant = msg.key.participant || msg.key.remoteJid;
     const userId = participant.split('@')[0];
-    const ownerId = config.get('bot.owner').split('@')[0]; // Convert full JID to userId
-    const isOwner = userId === ownerId || msg.key.fromMe;
+    const ownerId = config.get('bot.owner').split('@')[0]; 
+    const isOwner = userId === ownerId;
 
     const admins = config.get('bot.admins') || [];
 
@@ -315,6 +354,26 @@ checkPermissions(msg, commandName) {
                msg.message?.audioMessage?.caption ||
                '';
     }
+}
+function levenshteinDistance(a, b) {
+    const matrix = Array(a.length + 1)
+        .fill(null)
+        .map(() => Array(b.length + 1).fill(null));
+
+    for (let i = 0; i <= a.length; i++) matrix[i][0] = i;
+    for (let j = 0; j <= b.length; j++) matrix[0][j] = j;
+
+    for (let i = 1; i <= a.length; i++) {
+        for (let j = 1; j <= b.length; j++) {
+            const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+            matrix[i][j] = Math.min(
+                matrix[i - 1][j] + 1,
+                matrix[i][j - 1] + 1,
+                matrix[i - 1][j - 1] + cost
+            );
+        }
+    }
+    return matrix[a.length][b.length];
 }
 
 export default MessageHandler;
