@@ -314,7 +314,6 @@ setupEnhancedEventHandlers(saveCreds) {
         const authMethod = this.useMongoAuth ? 'MongoDB' : 'File-based';
         
         const startupMessage = `🚀 *${config.get('bot.name')} v${config.get('bot.version')}* is now online!\n\n` +
-                              `• 🤖 Telegram Bridge: ${config.get('telegram.enabled') ? '✅' : '❌'}\n` +
                               `Type *${config.get('bot.prefix')}help* for available commands!`;
 
         try {
