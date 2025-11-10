@@ -89,27 +89,27 @@ export default class JarvisModule {
 
         this.commands = [
             {
-                name: 'xi',
-                description: 'Enable/disable AI NL or run a prompt.',
-                usage: '.xi on | .xi off | .xi status | .xi <msg>',
+                name: 'jarvis',
+                description: 'Enable/disable jarvis AI NL or run a prompt.',
+                usage: '.jarvis on | .jarvis off | .jarvis status | .jarvis <msg>',
                 permissions: 'owner',
                 execute: async (msg, params, { bot, sender }) => {
                     const sub = (params[0] || '').toLowerCase();
 
                     if (sub === 'on') {
                         this.state.enabled = true;
-                        return bot.sendMessage(sender, { text: '✅ AI enabled.' });
+                        return bot.sendMessage(sender, { text: '✅ jarvis enabled.' });
                     }
                     if (sub === 'off') {
                         this.state.enabled = false;
-                        return bot.sendMessage(sender, { text: '⏸ AI disabled.' });
+                        return bot.sendMessage(sender, { text: '⏸ jarvis disabled.' });
                     }
                     if (sub === 'status') {
-                        return bot.sendMessage(sender, { text: `🤖 AI status: *${this.state.enabled ? 'enabled' : 'disabled'}*` });
+                        return bot.sendMessage(sender, { text: `🤖 jarvis status: *${this.state.enabled ? 'enabled' : 'disabled'}*` });
                     }
 
                     const text = params.join(' ').trim();
-                    if (!text) return bot.sendMessage(sender, { text: 'Usage: .xi <message>' });
+                    if (!text) return bot.sendMessage(sender, { text: 'Usage: .jarvis <message>' });
 
                     const answer = await this.freeChat(text).catch(e => `❌ ${e.message}`);
                     return bot.sendMessage(sender, { text: answer });
@@ -185,7 +185,6 @@ You are Jarvis: concise, helpful, slightly witty, never rude. Avoid long paragra
     return out?.reply || out?.text || JSON.stringify(out);
   }
 
-  // --- Hooks ---
 // --- Hooks ---
 async onNlp(msg, text, bot) {
   try {
@@ -194,7 +193,6 @@ async onNlp(msg, text, bot) {
 
     const jid = msg.key.remoteJid;
 
-    // ✅ DO NOT mark read here (removed)
     try {
       await this.bot.sock.presenceSubscribe(jid);
       await this.bot.sock.sendPresenceUpdate('composing', jid);
@@ -203,7 +201,7 @@ async onNlp(msg, text, bot) {
     const manifest = buildManifest(this.bot);
     const routed = await this.routeIntent(text, manifest);
 
-    // ✅ Command mode
+    //  Command mode
     if (routed?.action === 'command' && routed?.command) {
       const found = findCommandHandler(this.bot, routed.command);
       const params = Array.isArray(routed.args) ? routed.args : [];
@@ -225,19 +223,18 @@ async onNlp(msg, text, bot) {
 
       try { await this.bot.sock.sendPresenceUpdate('paused', jid); } catch {}
 
-      // ✅ NOW mark read (after reply)
       try { await this.bot.sock.readMessages([msg.key]); } catch {}
 
       return;
     }
 
-    // ✅ Chat mode
+    //  Chat mode
     const reply = routed?.reply || await this.freeChat(text);
 
     try { await this.bot.sock.sendPresenceUpdate('paused', jid); } catch {}
     await bot.sendMessage(jid, { text: reply });
 
-    // ✅ Mark message as read AFTER reply
+    //  Mark message as read AFTER reply
     try { await this.bot.sock.readMessages([msg.key]); } catch {}
 
   } catch (e) {
