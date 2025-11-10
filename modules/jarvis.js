@@ -71,73 +71,78 @@ function findCommandHandler(bot, name) {
 
 // --- Module ---
 export default class JarvisModule {
-  constructor(bot) {
-    this.bot = bot;
-    this.name = 'jarvis';
-    this.metadata = {
-      description: 'Natural-language AI control layer (Gemini)',
-      version: '1.0.0',
-      author: 'Jarvis Layer',
-      category: 'AI'
-    };
+    constructor(bot) {
+        this.bot = bot;
+        this.name = 'jarvis';
+        this.metadata = {
+            description: 'Natural-language AI control layer (Gemini)',
+            version: '1.0.0',
+            author: 'Jarvis Layer',
+            category: 'AI'
+        };
 
-    this.state = {
-      enabled: true,
-      persona: config.get?.('ai.persona') || 'friendly_jarvis'
-    };
+        this.state = {
 
-    this.commands = [
-      {
-        name: 'xi',
-        description: 'Enable/disable AI NL or run a prompt.',
-        usage: '.xi on | .xi off | .xi status | .xi <msg>',
-        permissions: 'owner',
-        execute: async (msg, params, { bot, sender }) => {
-          const sub = (params[0] || '').toLowerCase();
+            enabled: config.get?.('ai.enabled', false), 
+            persona: config.get?.('ai.persona') || 'friendly_jarvis'
+        };
 
-          if (sub === 'on') {
-            this.state.enabled = true;
-            return bot.sendMessage(sender, { text: '✅ AI enabled.' });
-          }
-          if (sub === 'off') {
-            this.state.enabled = false;
-            return bot.sendMessage(sender, { text: '⏸ AI disabled.' });
-          }
-          if (sub === 'status') {
-            return bot.sendMessage(sender, { text: `🤖 AI status: *${this.state.enabled ? 'enabled' : 'disabled'}*` });
-          }
+        this.commands = [
+            {
+                name: 'xi',
+                description: 'Enable/disable AI NL or run a prompt.',
+                usage: '.xi on | .xi off | .xi status | .xi <msg>',
+                permissions: 'owner',
+                execute: async (msg, params, { bot, sender }) => {
+                    const sub = (params[0] || '').toLowerCase();
 
-          const text = params.join(' ').trim();
-          if (!text) return bot.sendMessage(sender, { text: 'Usage: .xi <message>' });
+                    if (sub === 'on') {
+                        this.state.enabled = true;
+                        return bot.sendMessage(sender, { text: '✅ AI enabled.' });
+                    }
+                    if (sub === 'off') {
+                        this.state.enabled = false;
+                        return bot.sendMessage(sender, { text: '⏸ AI disabled.' });
+                    }
+                    if (sub === 'status') {
+                        return bot.sendMessage(sender, { text: `🤖 AI status: *${this.state.enabled ? 'enabled' : 'disabled'}*` });
+                    }
 
-          const answer = await this.freeChat(text).catch(e => `❌ ${e.message}`);
-          return bot.sendMessage(sender, { text: answer });
-        }
-      },
-      {
-        name: 'skills',
-        description: 'Show AI-visible commands.',
-        usage: '.skills',
-        permissions: 'public',
-        execute: async (msg, _params, { bot, sender }) => {
-          const manifest = buildManifest(bot);
-          const list = stringifyManifestShort(manifest);
-          return bot.sendMessage(sender, { text: `🧠 *AI Skills*\n${list || 'None.'}` });
-        }
-      }
-    ];
+                    const text = params.join(' ').trim();
+                    if (!text) return bot.sendMessage(sender, { text: 'Usage: .xi <message>' });
 
-    this.messageHooks = {};
-  }
+                    const answer = await this.freeChat(text).catch(e => `❌ ${e.message}`);
+                    return bot.sendMessage(sender, { text: answer });
+                }
+            },
+            {
+                name: 'skills',
+                description: 'Show AI-visible commands.',
+                usage: '.skills',
+                permissions: 'public',
+                execute: async (msg, _params, { bot, sender }) => {
+                    const manifest = buildManifest(bot);
+                    const list = stringifyManifestShort(manifest);
+                    return bot.sendMessage(sender, { text: `🧠 *AI Skills*\n${list || 'None.'}` });
+                }
+            }
+        ];
 
-  async init() {
+        this.messageHooks = {};
+    }
+
+async init() {
+    if (!this.state.enabled) {
+        return;
+    }
+
     this.messageHooks = {
-      nlp: this.onNlp.bind(this)
+        nlp: this.onNlp.bind(this)
     };
-  }
+}
 
-  async destroy() {}
-
+async destroy() {}
+  
   // --- AI Core ---
 async routeIntent(userText, manifest) {
   const system = `
