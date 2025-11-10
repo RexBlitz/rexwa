@@ -1192,49 +1192,57 @@ getMediaType(msg) {
 }
 
 
-     async handleCallNotification(callEvent) {
-        if (!this.telegramBot || !config.get('telegram.features.callLogs')) return;
+async handleCallNotification(callEvent) {
+    if (!this.telegramBot || !config.get('telegram.features.callLogs')) return;
 
-        const callerId = callEvent.from;
-        const callKey = `${callerId}_${callEvent.id}`;
+    let callerId = callEvent.from; // This can be a LID (e.g., 123@lid)
+    const callKey = `${callerId}_${callEvent.id}`;
 
-        if (this.activeCallNotifications.has(callKey)) return;
-        
-        this.activeCallNotifications.set(callKey, true);
-        setTimeout(() => {
-            this.activeCallNotifications.delete(callKey);
-        }, 30000);
+    if (this.activeCallNotifications.has(callKey)) return;
+    
+    this.activeCallNotifications.set(callKey, true);
+    setTimeout(() => {
+        this.activeCallNotifications.delete(callKey);
+    }, 30000);
 
-        try {
-            const phone = callerId.split('@')[0];
-            const callerName = this.contactMappings.get(phone) || `+${phone}`;
-            
-            const topicId = await this.getOrCreateTopic('call@broadcast', {
-                key: { remoteJid: 'call@broadcast', participant: callerId }
-            });
-
-            if (!topicId) {
-                logger.error('❌ Could not create call topic');
-                return;
+    try {
+        // --- START RESOLUTION FIX ---
+        // Attempt to resolve LID to PN JID using the stored map
+        if (callerId.endsWith('@lid') && this.whatsappBot.sock.signalRepository?.lidMapping) {
+            const pnJid = await this.whatsappBot.sock.signalRepository.lidMapping.getPNForLID(callerId);
+            if (pnJid) {
+                logger.debug(`📞 Resolved call LID ${callerId} to PN JID ${pnJid}`);
+                callerId = pnJid; // Use the stable PN JID for all subsequent lookups
             }
-
-            const callMessage = `📞 **Incoming Call**\n\n` +
-                               `👤 **From:** ${callerName}\n` +
-                               `📱 **Number:** +${phone}\n` +
-                               `⏰ **Time:** ${new Date().toLocaleString()}\n` +
-                               `📋 **Status:** ${callEvent.status || 'Incoming'}`;
-
-            await this.telegramBot.sendMessage(config.get('telegram.chatId'), callMessage, {
-                message_thread_id: topicId,
-                parse_mode: 'Markdown'
-            });
-
-            logger.info(`📞 Sent call notification from ${callerName}`);
-        } catch (error) {
-            logger.error('❌ Error handling call notification:', error);
         }
-    }
+        // --- END RESOLUTION FIX ---
 
+        const phone = callerId.split('@')[0];
+        const callerName = this.contactMappings.get(phone) || `+${phone}`;
+        
+        const topicId = await this.getOrCreateTopic('call@broadcast', {
+            key: { remoteJid: 'call@broadcast', participant: callerId }
+        });
+
+        if (!topicId) {
+            logger.error('❌ Could not create call topic');
+            return;
+        }
+
+        const callMessage = `📞 **Incoming Call**\n\n` +
+                            `👤 **From:** ${callerName}\n` +
+                            `📱 **Number:** +${phone}\n`;
+
+        await this.telegramBot.sendMessage(config.get('telegram.chatId'), callMessage, {
+            message_thread_id: topicId,
+            parse_mode: 'Markdown'
+        });
+
+        logger.info(`📞 Sent call notification from ${callerName}`);
+    } catch (error) {
+        logger.error('❌ Error handling call notification:', error);
+    }
+}
     async handleWhatsAppMedia(whatsappMsg, mediaType, topicId, isOutgoing = false) {
     const sendMedia = async (finalTopicId) => {
         try {
