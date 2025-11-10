@@ -1,5 +1,5 @@
 import config from '../config.js';
-import log from '../core/logger.js' 
+import log from '../core/logger.js';
 
 const DEFAULT_MODEL = 'gemini-2.5-flash';
 
@@ -7,8 +7,7 @@ const DEFAULT_MODEL = 'gemini-2.5-flash';
 async function geminiJson(prompt, systemInstruction, model, apiKey) {
   const finalModel = model || DEFAULT_MODEL;
   const key = apiKey || process.env.GEMINI_API_KEY || config.get?.('ai.gemini.apiKey');
-
-  if (!key) throw new Error('Gemini API key missing. Set GEMINI_API_KEY env or ai.gemini.apiKey in config.');
+  if (!key) throw new Error('Gemini API key missing.');
 
   const body = {
     contents: [
@@ -23,10 +22,7 @@ async function geminiJson(prompt, systemInstruction, model, apiKey) {
 
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${finalModel}:generateContent?key=${encodeURIComponent(key)}`;
   const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-  if (!res.ok) {
-    const t = await res.text();
-    throw new Error(`Gemini error ${res.status}: ${t}`);
-  }
+  if (!res.ok) throw new Error(`Gemini error ${res.status}: ${await res.text()}`);
   const data = await res.json();
   const text = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? '{}';
   try { return JSON.parse(text); } catch { return {}; }
@@ -60,7 +56,6 @@ function buildManifest(bot) {
 }
 
 function stringifyManifestShort(m) {
-  // Compact list of callable commands for prompting
   return m.commands.map(c => `${c.name}${c.aliases?.length ? ` (${c.aliases.join(', ')})` : ''} – ${c.description}`).join('\n');
 }
 
@@ -68,24 +63,10 @@ function findCommandHandler(bot, name) {
   if (!name) return null;
   const h = bot.messageHandler.commandHandlers.get(name);
   if (h) return { name, handler: h };
-  // try alias
   for (const [cmdName, h] of bot.messageHandler.commandHandlers.entries()) {
     if (cmdName === name) return { name: cmdName, handler: h };
   }
   return null;
-}
-
-async function replySameLang(bot, jid, text, lang, apiKey, model) {
-  const safe = String(text ?? '');
-  if (!lang || lang.toLowerCase() === 'en') {
-    return bot.sendMessage(jid, { text: safe });
-  }
-  const prompt = JSON.stringify({ target_lang: lang, text: safe });
-  const out = await geminiJson(prompt,
-`Translate "text" to language code "target_lang". Keep meaning, tone, and emojis. Return {"translated": "..."} only.`,
-  model, apiKey);
-  const t = out?.translated || safe;
-  return bot.sendMessage(jid, { text: t });
 }
 
 // --- Module ---
@@ -94,88 +75,72 @@ export default class JarvisModule {
     this.bot = bot;
     this.name = 'jarvis';
     this.metadata = {
-      description: 'Natural-language AI control layer (Gemini): intent → command/function, self-aware help, multilingual replies.',
+      description: 'Natural-language AI control layer (Gemini)',
       version: '1.0.0',
       author: 'Jarvis Layer',
       category: 'AI'
     };
+
     this.state = {
       enabled: true,
-      persona: (config.get?.('ai.persona') || 'friendly_jarvis')
+      persona: config.get?.('ai.persona') || 'friendly_jarvis'
     };
 
     this.commands = [
       {
         name: 'xi',
-        description: 'Enable/disable AI NL control or run a prompt. Usage: .ai on|off|status|<ask anything>',
-        usage: '.xi on | .ai off | .ai status | .ai <message>',
+        description: 'Enable/disable AI NL or run a prompt.',
+        usage: '.xi on | .xi off | .xi status | .xi <msg>',
         permissions: 'owner',
         execute: async (msg, params, { bot, sender }) => {
           const sub = (params[0] || '').toLowerCase();
+
           if (sub === 'on') {
             this.state.enabled = true;
-            return bot.sendMessage(sender, { text: '✅ AI is now *enabled*. Natural language control is active.' });
+            return bot.sendMessage(sender, { text: '✅ AI enabled.' });
           }
           if (sub === 'off') {
             this.state.enabled = false;
-            return bot.sendMessage(sender, { text: '⏸️ AI is now *disabled*. Only commands will work.' });
+            return bot.sendMessage(sender, { text: '⏸ AI disabled.' });
           }
           if (sub === 'status') {
             return bot.sendMessage(sender, { text: `🤖 AI status: *${this.state.enabled ? 'enabled' : 'disabled'}*` });
           }
-          // treat rest as a one-shot chat with same-language reply
-          const text = params.join(' ').trim();
-          if (!text) return bot.sendMessage(sender, { text: 'ℹ️ Usage: .ai on|off|status|<message>' });
 
-          const lang = await this.detectLanguage(text).catch(() => 'en');
-          const answer = await this.freeChat(text, lang).catch(e => `❌ ${e.message}`);
-          return replySameLang(bot, sender, answer, lang, config.get?.('ai.gemini.apiKey'), config.get?.('ai.gemini.model'));
+          const text = params.join(' ').trim();
+          if (!text) return bot.sendMessage(sender, { text: 'Usage: .xi <message>' });
+
+          const answer = await this.freeChat(text).catch(e => `❌ ${e.message}`);
+          return bot.sendMessage(sender, { text: answer });
         }
       },
       {
         name: 'skills',
-        description: 'Show AI-visible skills/commands (self manifest).',
+        description: 'Show AI-visible commands.',
         usage: '.skills',
         permissions: 'public',
         execute: async (msg, _params, { bot, sender }) => {
           const manifest = buildManifest(bot);
           const list = stringifyManifestShort(manifest);
-          return bot.sendMessage(sender, { text: `🧠 *AI Skills I Know*\n${list || 'No commands found.'}` });
+          return bot.sendMessage(sender, { text: `🧠 *AI Skills*\n${list || 'None.'}` });
         }
       }
     ];
 
-    // Hooks registered below in init()
     this.messageHooks = {};
   }
 
   async init() {
-    // Attach hooks only once
     this.messageHooks = {
-      // natural-language messages (non-command)
-      nlp: this.onNlp.bind(this),
-
+      nlp: this.onNlp.bind(this)
     };
-
   }
 
-  async destroy() {
-
-  }
+  async destroy() {}
 
   // --- AI Core ---
-  async detectLanguage(text) {
-    const out = await geminiJson(
-      JSON.stringify({ text }),
-      `Detect language of "text". Respond with {"language": "<ISO-639-1 code>"} only.`,
-      config.get?.('ai.gemini.model'),
-      config.get?.('ai.gemini.apiKey')
-    );
-    return (out?.language || 'en').toLowerCase();
-  }
-
-  async routeIntent(userText, manifest, userLang) {
-    const system = `
+async routeIntent(userText, manifest) {
+  const system = `
 You are an AI command router for a WhatsApp bot. You know these commands:
 
 ${stringifyManifestShort(manifest)}
@@ -185,7 +150,6 @@ If not, set "action":"chat" and produce a helpful natural-language reply.
 
 Return strict JSON:
 {
-  "language": "<iso-639-1>",
   "action": "command" | "chat",
   "command": "<commandName or empty>",
   "args": ["..."],
@@ -193,118 +157,87 @@ Return strict JSON:
 }
 
 Rules:
-- Keep "language" = user's language.
 - If user intent is close to a command (even with typos), still map to it.
 - If multiple commands could fit, pick the best single one.
 - Be concise in "reply".
 `;
-    const prompt = JSON.stringify({ user: userText, user_lang: userLang, prefix: manifest.bot.prefix });
-    return await geminiJson(prompt, system, config.get?.('ai.gemini.model'), config.get?.('ai.gemini.apiKey'));
-  }
+  const prompt = JSON.stringify({ user: userText, prefix: manifest.bot.prefix });
+  return await geminiJson(prompt, system, config.get?.('ai.gemini.model'), config.get?.('ai.gemini.apiKey'));
+}
 
-  async freeChat(userText, userLang) {
+
+  async freeChat(userText) {
     const system = (config.get?.('ai.personaSystem') || `
-You are Jarvis: concise, helpful, slightly witty, never rude. Avoid long paragraphs unless asked.`).trim();
+You are Jarvis: concise, helpful, slightly witty, never rude. Avoid long paragraphs unless asked.
+`).trim();
 
-    const out = await geminiJson(JSON.stringify({ user: userText, lang: userLang }),
-      system, config.get?.('ai.gemini.model'), config.get?.('ai.gemini.apiKey'));
+    const out = await geminiJson(JSON.stringify({ user: userText }),
+      system,
+      config.get?.('ai.gemini.model'),
+      config.get?.('ai.gemini.apiKey')
+    );
+
     return out?.reply || out?.text || JSON.stringify(out);
   }
 
   // --- Hooks ---
+// --- Hooks ---
 async onNlp(msg, text, bot) {
   try {
     if (!this.state.enabled) return;
-    if (!text || !text.trim()) return;
+    if (!text?.trim()) return;
 
     const jid = msg.key.remoteJid;
 
-    // ✅ Read message + start typing indicator
+    // ✅ DO NOT mark read here (removed)
     try {
-      await this.bot.sock.readMessages([msg.key]);
       await this.bot.sock.presenceSubscribe(jid);
       await this.bot.sock.sendPresenceUpdate('composing', jid);
-    } catch (e) {
-      log.error("Presence error (nlp):", e);
-    }
+    } catch {}
 
-    const lang = await this.detectLanguage(text).catch(() => 'en');
     const manifest = buildManifest(this.bot);
+    const routed = await this.routeIntent(text, manifest);
 
-    const routed = await this.routeIntent(text, manifest, lang);
-    const action = routed?.action;
-
-    if (action === 'command' && routed?.command) {
+    // ✅ Command mode
+    if (routed?.action === 'command' && routed?.command) {
       const found = findCommandHandler(this.bot, routed.command);
-      if (!found?.handler) {
-        const reply = routed?.reply || `I couldn't execute "${routed.command}".`;
-
-        // ✅ stop typing
-        try {
-          await this.bot.sock.sendPresenceUpdate('paused', jid);
-        } catch {}
-
-        return replySameLang(this.bot, jid, reply, lang,
-          config.get?.('ai.gemini.apiKey'),
-          config.get?.('ai.gemini.model')
-        );
-      }
-
       const params = Array.isArray(routed.args) ? routed.args : [];
 
       try {
-        await found.handler.execute(msg, params, {
-          bot: this.bot,
-          sender: jid,
-          participant: msg.key.participant || jid,
-          isGroup: jid.endsWith('@g.us')
-        });
+        if (found?.handler) {
+          await found.handler.execute(msg, params, {
+            bot: this.bot,
+            sender: jid,
+            participant: msg.key.participant || jid,
+            isGroup: jid.endsWith('@g.us')
+          });
+        } else {
+          await bot.sendMessage(jid, { text: routed.reply || `Could not execute ${routed.command}.` });
+        }
       } catch (err) {
-        log.error('AI command execution error:', err);
-
-        // ✅ stop typing
-        try {
-          await this.bot.sock.sendPresenceUpdate('paused', jid);
-        } catch {}
-
-        await replySameLang(
-          this.bot,
-          jid,
-          `❌ Failed to run ${routed.command}: ${err.message}`,
-          lang,
-          config.get?.('ai.gemini.apiKey'),
-          config.get?.('ai.gemini.model')
-        );
+        await bot.sendMessage(jid, { text: `❌ Error running ${routed.command}: ${err.message}` });
       }
 
-      // ✅ Stop typing after success
-      try {
-        await this.bot.sock.sendPresenceUpdate('paused', jid);
-      } catch {}
+      try { await this.bot.sock.sendPresenceUpdate('paused', jid); } catch {}
+
+      // ✅ NOW mark read (after reply)
+      try { await this.bot.sock.readMessages([msg.key]); } catch {}
 
       return;
     }
 
-    // ✅ Chat / fallback
-    const reply = routed?.reply || await this.freeChat(text, lang);
+    // ✅ Chat mode
+    const reply = routed?.reply || await this.freeChat(text);
 
-    // ✅ stop typing before sending
-    try {
-      await this.bot.sock.sendPresenceUpdate('paused', jid);
-    } catch {}
+    try { await this.bot.sock.sendPresenceUpdate('paused', jid); } catch {}
+    await bot.sendMessage(jid, { text: reply });
 
-    await replySameLang(
-      this.bot,
-      jid,
-      reply,
-      lang,
-      config.get?.('ai.gemini.apiKey'),
-      config.get?.('ai.gemini.model')
-    );
+    // ✅ Mark message as read AFTER reply
+    try { await this.bot.sock.readMessages([msg.key]); } catch {}
 
   } catch (e) {
     log.error('onNlp error:', e);
   }
-  }
 }
 
+}
