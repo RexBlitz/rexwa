@@ -51,12 +51,10 @@ class HyperWaBot {
         }
     }, 300000);
     }
-    async initialize() {
-        logger.info('🔧 Initializing HyperWa Userbot with Enhanced Store...');
+   async initialize() {
 
         try {
             this.db = await connectDb();
-            logger.info('✅ Database connected successfully!');
         } catch (error) {
             logger.error('❌ Failed to connect to database:', error);
             process.exit(1);
@@ -69,11 +67,8 @@ class HyperWaBot {
                 await this.telegramBridge.initialize();
                 logger.info('✅ Telegram bridge initialized');
 
-                try {
-                    await this.telegramBridge.sendStartMessage();
-                } catch (err) {
-                    logger.warn('⚠️ Failed to send start message via Telegram:', err.message);
-                }
+                await this.telegramBridge.sendStartMessage(); 
+                
             } catch (error) {
                 logger.warn('⚠️ Telegram bridge failed to initialize:', error.message);
                 this.telegramBridge = null;
@@ -83,8 +78,10 @@ class HyperWaBot {
         await this.moduleLoader.loadModules();
         await this.startWhatsApp();
 
-        logger.info('✅ HyperWa Userbot with Enhanced Store initialized successfully!');
+        logger.info('✅ HyperWa Userbot initialized successfully!');
     }
+
+    
     async startWhatsApp() {
         let state, saveCreds;
         // Clean up existing socket if present
