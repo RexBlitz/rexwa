@@ -533,13 +533,7 @@ async sendToAllUsers(text, extra = {}) {
 
 
 async sendStartMessage() {
-    const startMessage = `🚀 *HyperWa Bridge Started Successfully!*\n\n` +
-                         `✅ WhatsApp: Connected\n` +
-                         `✅ Telegram Bridge: Active\n` +
-                         `📞 Contacts: ${this.contactMappings.size} synced\n` +
-                         `💬 Chats: ${this.chatMappings.size} mapped\n` +
-                         `🔗 Ready to bridge messages!\n\n` +
-                         `⏰ Started at: ${new Date().toLocaleString()}`;
+    const startMessage = `🚀 *HyperWa Bridge Started Successfully!*\n\n`;
 
     // Send to all users
     try {
