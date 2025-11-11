@@ -35,7 +35,7 @@ class Config {
 
             features: {
                 mode: 'private',
-                customModules: true,
+                customModules: false,
                 rateLimiting: true,
                 autoReply: false,
                 autoViewStatus: false,
