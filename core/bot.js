@@ -8,7 +8,8 @@ import makeWASocket, {
   delay,
   isPnUser,
   proto,
-  WAMessageAddressingMode
+  WAMessageAddressingMode,
+  makeSignalRepository
 } from '@whiskeysockets/baileys';
 import qrcode from 'qrcode-terminal';
 import fs from 'fs-extra';
@@ -112,24 +113,28 @@ class HyperWaBot {
         logger.info(`📱 Using WA v${version.join('.')}, isLatest: ${isLatest}`);
 
         try {
-            this.sock = makeWASocket({
-        auth: {
-            creds: state.creds,
-            keys: makeCacheableSignalKeyStore(state.keys, logger.child({ module: 'keys' })),
-        },
-        version,
-        logger: logger.child({ module: 'baileys' }),
-        msgRetryCounterCache: this.msgRetryCounterCache,
-        generateHighQualityLinkPreview: true,
-        getMessage: this.getMessage.bind(this), 
-        browser: ['HyperWa', 'Chrome', '3.0'],
-        markOnlineOnConnect: false ,
-        firewall: true,
-        printQRInTerminal: false
-    });
+            const signalRepository = makeSignalRepository(state.creds, state.keys);
             
-    this.store.bind(this.sock.ev);
-    logger.info('🔗 Store bound to socket');
+            this.sock = makeWASocket({
+                auth: {
+                    creds: state.creds,
+                    keys: makeCacheableSignalKeyStore(state.keys, logger.child({ module: 'keys' })),
+                    signalRepository, 
+                },
+                version,
+                logger: logger.child({ module: 'baileys' }),
+                msgRetryCounterCache: this.msgRetryCounterCache,
+                generateHighQualityLinkPreview: true,
+                getMessage: this.getMessage.bind(this), 
+                browser: ['HyperWa', 'Chrome', '3.0'],
+                markOnlineOnConnect: false ,
+                firewall: true,
+                printQRInTerminal: false
+            });
+            
+            this.store.bind(this.sock.ev);
+            logger.info('🔗 Store bound to socket');
+            
             const connectionPromise = new Promise((resolve, reject) => {
                 const connectionTimeout = setTimeout(() => {
                     if (!this.sock.user) {
