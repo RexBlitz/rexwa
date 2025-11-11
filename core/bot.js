@@ -1,14 +1,14 @@
-import makeWASocket, { 
-    useMultiFileAuthState, 
-    DisconnectReason, 
-    fetchLatestBaileysVersion, 
-    makeCacheableSignalKeyStore, 
-    getAggregateVotesInPollMessage, 
-    isJidNewsletter, 
-    delay, 
-    isPnUser,
-    proto,
-    WAMessageAddressingMode
+import makeWASocket, {
+  useMultiFileAuthState,
+  DisconnectReason,
+  fetchLatestBaileysVersion,
+  makeCacheableSignalKeyStore,
+  getAggregateVotesInPollMessage,
+  isJidNewsletter,
+  delay,
+  isPnUser,
+  proto,
+  WAMessageAddressingMode
 } from '@whiskeysockets/baileys';
 import qrcode from 'qrcode-terminal';
 import fs from 'fs-extra';
