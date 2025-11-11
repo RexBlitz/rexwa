@@ -7,7 +7,8 @@ import makeWASocket, {
     isJidNewsletter, 
     delay, 
     isPnUser,
-    proto 
+    proto,
+    WAMessageAddressingMode
 } from '@whiskeysockets/baileys';
 import qrcode from 'qrcode-terminal';
 import fs from 'fs-extra';
