@@ -11,8 +11,6 @@ import makeWASocket, {
   WAMessageAddressingMode
 } from '@whiskeysockets/baileys';
 
-import { makeSignalRepository } from '@whiskeysockets/baileys/lib/Utils/signal-repository.js';
-
 import qrcode from 'qrcode-terminal';
 import fs from 'fs-extra';
 import path from 'path';
