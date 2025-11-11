@@ -649,80 +649,91 @@ async sendStartMessage() {
         }
     }
 
- async syncMessage(whatsappMsg, text) {
-    if (!this.telegramBot || !config.get('telegram.enabled')) return;
-    
-    // --- START FIX: NORMALIZE JID/LID ---
-    let sender = whatsappMsg.key.remoteJid;
-    let participant = whatsappMsg.key.participant || sender;
-    
-    // Normalize sender (chat ID) to PN JID if it's a LID and Alt is available
-    if (sender.endsWith('@lid') && whatsappMsg.key.remoteJidAlt) {
-        sender = whatsappMsg.key.remoteJidAlt;
-        // Also update participant if it defaulted to sender (for DMs)
-        if (participant === whatsappMsg.key.remoteJid) {
-            participant = sender;
+async syncMessage(whatsappMsg, text) {
+        if (!this.telegramBot || !config.get('telegram.enabled')) return;
+
+        // --- START FIX: NORMALIZE JID/LID ---
+        let sender = whatsappMsg.key.remoteJid;
+        let participant = whatsappMsg.key.participant || sender;
+
+        // Check if the chat ID is an LID
+        if (sender.endsWith('@lid')) {
+            // remoteJidAlt is the PN JID for DMs/Chat ID if remoteJid is LID
+            if (whatsappMsg.key.remoteJidAlt) {
+                sender = whatsappMsg.key.remoteJidAlt;
+            } else if (this.whatsappBot.sock.signalRepository?.lidMapping) {
+                // Fallback: use signalRepository to resolve the PN if Alt is missing (rare)
+                const pnJid = await this.whatsappBot.sock.signalRepository.lidMapping.getPNForLID(sender);
+                if (pnJid) sender = pnJid;
+            }
         }
-    }
-    
-    // 🔧 NEW: Normalize participant (group sender) to PN JID if it's a LID
-    if (participant.endsWith('@lid') && whatsappMsg.key.participantAlt) {
-        participant = whatsappMsg.key.participantAlt;
-        logger.debug(`📞 Using participantAlt for group message: ${participant}`);
-    }
-    // --- END FIX ---
-    
-    const isFromMe = whatsappMsg.key.fromMe;
-    
-    if (sender === 'status@broadcast') {
-        await this.handleStatusMessage(whatsappMsg, text);
-        return;
-    }
-    
-    if (isFromMe) {
-        const existingTopicId = this.chatMappings.get(sender);
-        if (existingTopicId) {
-            await this.syncOutgoingMessage(whatsappMsg, text, existingTopicId, sender);
+
+        // Check if the participant ID (sender in a group) is an LID
+        if (participant.endsWith('@lid')) {
+            // participantAlt is the PN JID for group participants if participant is LID
+            if (whatsappMsg.key.participantAlt) {
+                participant = whatsappMsg.key.participantAlt;
+            } else if (this.whatsappBot.sock.signalRepository?.lidMapping) {
+                // Fallback
+                const pnJid = await this.whatsappBot.sock.signalRepository.lidMapping.getPNForLID(participant);
+                if (pnJid) participant = pnJid;
+            }
         }
-        return;
-    }
-    
-    await this.createUserMapping(participant, whatsappMsg);
-    const topicId = await this.getOrCreateTopic(sender, whatsappMsg);
-    
-    if (whatsappMsg.message?.ptvMessage || (whatsappMsg.message?.videoMessage?.ptv)) {
-        await this.handleWhatsAppMedia(whatsappMsg, 'video_note', topicId);
-    } else if (whatsappMsg.message?.imageMessage) {
-        await this.handleWhatsAppMedia(whatsappMsg, 'image', topicId);
-    } else if (whatsappMsg.message?.videoMessage) {
-        await this.handleWhatsAppMedia(whatsappMsg, 'video', topicId);
-    } else if (whatsappMsg.message?.audioMessage) {
-        await this.handleWhatsAppMedia(whatsappMsg, 'audio', topicId);
-    } else if (whatsappMsg.message?.documentMessage) {
-        await this.handleWhatsAppMedia(whatsappMsg, 'document', topicId);
-    } else if (whatsappMsg.message?.stickerMessage) {
-        await this.handleWhatsAppMedia(whatsappMsg, 'sticker', topicId);
-    } else if (whatsappMsg.message?.locationMessage) { 
-        await this.handleWhatsAppLocation(whatsappMsg, topicId);
-    } else if (whatsappMsg.message?.contactMessage) { 
-        await this.handleWhatsAppContact(whatsappMsg, topicId);
-    } else if (text) {
-        let messageText = text;
-        if (sender.endsWith('@g.us') && participant !== sender) {
-            // participant is already normalized to PN above
-            const senderPhone = participant.split('@')[0];
-            const senderName = this.contactMappings.get(senderPhone) || senderPhone;
-            messageText = `👤 ${senderName}:\n${text}`;
+        // --- END FIX ---
+        
+        const isFromMe = whatsappMsg.key.fromMe;
+        
+        if (sender === 'status@broadcast') {
+            await this.handleStatusMessage(whatsappMsg, text);
+            return;
         }
         
-        await this.sendSimpleMessage(topicId, messageText, sender);
-    }
-    
-    if (whatsappMsg.key?.id && config.get('telegram.features.readReceipts') !== false) {
-        this.queueMessageForReadReceipt(sender, whatsappMsg.key);
-    }
-}
+        // Handle outgoing messages (messages sent by the bot/owner)
+        if (isFromMe) {
+            const existingTopicId = this.chatMappings.get(sender);
+            if (existingTopicId) {
+                await this.syncOutgoingMessage(whatsappMsg, text, existingTopicId, sender);
+            }
+            return;
+        }
+        
+        // Handle incoming messages
+        await this.createUserMapping(participant, whatsappMsg);
+        const topicId = await this.getOrCreateTopic(sender, whatsappMsg);
+        
+        if (whatsappMsg.message?.ptvMessage || (whatsappMsg.message?.videoMessage?.ptv)) {
+            await this.handleWhatsAppMedia(whatsappMsg, 'video_note', topicId);
+        } else if (whatsappMsg.message?.imageMessage) {
+            await this.handleWhatsAppMedia(whatsappMsg, 'image', topicId);
+        } else if (whatsappMsg.message?.videoMessage) {
+            await this.handleWhatsAppMedia(whatsappMsg, 'video', topicId);
+        } else if (whatsappMsg.message?.audioMessage) {
+            await this.handleWhatsAppMedia(whatsappMsg, 'audio', topicId);
+        } else if (whatsappMsg.message?.documentMessage) {
+            await this.handleWhatsAppMedia(whatsappMsg, 'document', topicId);
+        } else if (whatsappMsg.message?.stickerMessage) {
+            await this.handleWhatsAppMedia(whatsappMsg, 'sticker', topicId);
+        } else if (whatsappMsg.message?.locationMessage) { 
+            await this.handleWhatsAppLocation(whatsappMsg, topicId);
+        } else if (whatsappMsg.message?.contactMessage) { 
+            await this.handleWhatsAppContact(whatsappMsg, topicId);
+        } else if (text) {
+            let messageText = text;
+            // The sender/participant is now guaranteed to be a PN JID (or group/broadcast JID)
+            if (sender.endsWith('@g.us') && participant !== sender) {
+                const senderPhone = participant.split('@')[0];
+                const senderName = this.contactMappings.get(senderPhone) || senderPhone;
+                messageText = `👤 ${senderName}:\n${text}`;
+            }
+            
+            await this.sendSimpleMessage(topicId, messageText, sender);
+        }
 
+        if (whatsappMsg.key?.id && config.get('telegram.features.readReceipts') !== false) {
+            // Note: The original messageKey should be used for read/read receipts
+            this.queueMessageForReadReceipt(whatsappMsg.key.remoteJid, whatsappMsg.key); 
+        }
+    }
 async handleStatusMessage(whatsappMsg, text) {
     try {
         if (!config.get('telegram.features.statusSync')) return;
@@ -1200,7 +1211,7 @@ getMediaType(msg) {
 async handleCallNotification(callEvent) {
     if (!this.telegramBot || !config.get('telegram.features.callLogs')) return;
 
-    const callerId = callEvent.from;
+    let callerId = callEvent.from; // This can be a LID (e.g., 123@lid)
     const callKey = `${callerId}_${callEvent.id}`;
 
     if (this.activeCallNotifications.has(callKey)) return;
@@ -1211,22 +1222,19 @@ async handleCallNotification(callEvent) {
     }, 30000);
 
     try {
-        // 🔧 FIX: Resolve LID to PN for call notifications
-        // Note: Call events don't have Alt fields, so we need async resolution
-        let phone = callerId.split('@')[0];
-        
+        // ⭐ Resolve LID to PN JID using the stored map
         if (callerId.endsWith('@lid')) {
-            try {
-                const pn = await this.whatsappBot.sock.signalRepository?.lidMapping?.getPNForLID(callerId);
-                if (pn) {
-                    phone = pn.split('@')[0];
-                    logger.debug(`📞 Resolved call LID to PN: ${callerId} → ${pn}`);
-                }
-            } catch (err) {
-                logger.debug('Could not resolve call LID to PN');
+            const pnJid = await this.whatsappBot.sock.signalRepository?.lidMapping?.getPNForLID(callerId);
+            if (pnJid) {
+                logger.debug(`📞 Resolved call LID ${callerId} to PN JID ${pnJid}`);
+                callerId = pnJid; // Use the stable PN JID for all subsequent lookups and UI
+            } else {
+                logger.warn(`📞 Could not resolve LID ${callerId} to PN JID. Using LID for UI.`);
             }
         }
-        
+        // --- END RESOLUTION FIX ---
+
+        const phone = callerId.split('@')[0];
         const callerName = this.contactMappings.get(phone) || `+${phone}`;
         
         const topicId = await this.getOrCreateTopic('call@broadcast', {
@@ -1239,30 +1247,18 @@ async handleCallNotification(callEvent) {
         }
 
         const callMessage = `📞 **Incoming Call**\n\n` +
-                           `👤 **From:** ${callerName}\n` +
-                           `📱 **Number:** +${phone}\n` +
-                           `⏰ **Time:** ${new Date().toLocaleString()}\n` +
-                           `📋 **Status:** ${callEvent.status || 'Incoming'}`;
+                            `👤 **From:** ${callerName}\n` +
+                            `📱 **Number:** +${phone}\n`;
 
         await this.telegramBot.sendMessage(config.get('telegram.chatId'), callMessage, {
             message_thread_id: topicId,
             parse_mode: 'Markdown'
         });
 
-        logger.info(`📞 Sent call notification from ${callerName} (+${phone})`);
+        logger.info(`📞 Sent call notification from ${callerName}`);
     } catch (error) {
         logger.error('❌ Error handling call notification:', error);
     }
-}
-
-// 4️⃣ OPTIONAL BUT RECOMMENDED: Add helper function for consistent normalization
-normalizeJid(jid, altJid = null) {
-    // If JID is LID format and we have an alternate, use the alternate (PN)
-    if (jid && jid.endsWith('@lid') && altJid) {
-        logger.debug(`🔄 Normalized JID: ${jid} → ${altJid}`);
-        return altJid;
-    }
-    return jid;
 }
 
     async handleWhatsAppMedia(whatsappMsg, mediaType, topicId, isOutgoing = false) {
