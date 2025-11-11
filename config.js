@@ -40,7 +40,7 @@ class Config {
                 autoReply: false,
                 autoViewStatus: false,
                 telegramBridge: true,
-                respondToUnknownCommands: true,
+                respondToUnknownCommands: false,
                 sendPermissionError: false
             },
 
