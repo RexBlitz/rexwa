@@ -2026,15 +2026,12 @@ async setupWhatsAppHandlers() {
             return;
         }
 
+        // ⭐ MANDATORY FIX: Normalize JID helper function (using contact.phoneNumber)
         const normalizeJid = (contact) => {
             let jid = contact.id;
-            // The contact.id is the preferred ID. If it ends in @lid, 
-            // we should try to use the provided PN JID for stable lookup.
             if (jid.endsWith('@lid') && contact.phoneNumber) {
-                // Construct the PN JID from the phone number
-                return contact.phoneNumber + '@s.whatsapp.net';
+                return contact.phoneNumber.replace(/[^0-9]/g, '') + '@s.whatsapp.net';
             }
-            // Use the provided ID (which could be a stable PN JID or the LID)
             return jid;
         };
 
@@ -2044,13 +2041,13 @@ async setupWhatsAppHandlers() {
                 let updatedCount = 0;
                 for (const contact of contacts) {
                     // Use the normalized JID for mapping/topic lookup
-                    const jid = normalizeJid(contact);
+                    const jid = normalizeJid(contact); 
                     
                     if (jid && !jid.endsWith('@lid') && contact.name) {
                         const phone = jid.split('@')[0];
                         const oldName = this.contactMappings.get(phone);
                         
-                        // Only update if it's a real contact name (not handle name)
+                        // Only update if it's a real contact name
                         if (contact.name !== phone && 
                             !contact.name.startsWith('+') && 
                             contact.name.length > 2 &&
@@ -2134,11 +2131,12 @@ async setupWhatsAppHandlers() {
         // FIXED: Profile picture update handler with proper URL checking
         this.whatsappBot.sock.ev.on('contacts.update', async (contacts) => {
             for (const contact of contacts) {
-                const jid = normalizeJid(contact); // Use normalized JID
+                const jid = normalizeJid(contact); // Use normalized JID (PN JID if resolved)
+                
+                // Check for profile picture updates. Pass the *resolved* JID.
                 if (jid && this.chatMappings.has(jid)) {
                     const topicId = this.chatMappings.get(jid);
                     
-                    // Check for profile picture updates
                     logger.debug(`📸 Checking profile picture update for ${jid}`);
                     await this.sendProfilePicture(topicId, jid, true);
                 }
